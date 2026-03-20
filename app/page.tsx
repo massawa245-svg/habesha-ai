@@ -1,18 +1,57 @@
-// app/page.tsx - KOMPLETT mit Feedback + WhatsApp Style
 'use client';
+
 import { useState, useRef, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
+// ============================================
+// TYPEN
+// ============================================
+type Message = {
+  role: 'user' | 'assistant';
+  content: string;
+  image?: string;
+};
+
+type Feedback = 'gut' | 'schlecht' | 'neutral';
+
+// ============================================
+// SPEECH RECOGNITION (Browser-API erweitern)
+// ============================================
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognition;
+    webkitSpeechRecognition: new () => SpeechRecognition;
+  }
+}
+
+interface SpeechRecognition extends EventTarget {
+  lang: string;
+  interimResults: boolean;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+}
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+
+// ============================================
+// KOMPONENTE
+// ============================================
 export default function Home() {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  const [userEmail, setUserEmail] = useState('');
-  const [isListening, setIsListening] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null); // ← GEÄNDERT!
-  const inputRef = useRef(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
+  const [uploading, setUploading] = useState<boolean>(false);
+  const [mounted, setMounted] = useState<boolean>(false);
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [isListening, setIsListening] = useState<boolean>(false);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -21,20 +60,19 @@ export default function Home() {
   }, []);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  // Auto-resize Textare
   // Auto-resize Textarea
-const autoResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-  const textarea = e.target;
-  textarea.style.height = 'auto';
-  textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-};
+  const autoResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const textarea = e.target;
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+  };
 
   // ============================================
   // 🎤 VOICE INPUT
@@ -44,22 +82,22 @@ const autoResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       alert('Dein Browser unterstützt keine Spracheingabe.\nBitte Chrome oder Edge verwenden.');
       return;
     }
-    
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(track => track.stop());
-    } catch (err) {
+      stream.getTracks().forEach((track) => track.stop());
+    } catch {
       alert('❌ Mikrofon-Zugriff verweigert.\nBitte erlaube den Zugriff in den Browsereinstellungen.');
       return;
     }
-    
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
+
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionAPI();
     recognition.lang = 'de-DE';
     recognition.interimResults = false;
-    
+
     recognition.onstart = () => setIsListening(true);
-    recognition.onresult = (event) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       const transcript = event.results[0][0].transcript;
       setInput(transcript);
       setIsListening(false);
@@ -79,72 +117,76 @@ const autoResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    
+
     if (file.size > 5 * 1024 * 1024) {
       alert('📸 Bild ist zu groß. Maximal 5 MB erlaubt.');
       return;
     }
-    
+
     setUploading(true);
-    
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const base64Image = e.target?.result as string;
-      
-      setMessages(prev => [...prev, { 
-        role: 'user', 
-        content: '📸 Bild',
-        image: base64Image
-      }]);
-      
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
-        content: '📸 Ich sehe dein Bild! Beschreib mir kurz, was darauf zu sehen ist – dann kann ich dir helfen.' 
-      }]);
-      
+
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', content: '📸 Bild', image: base64Image },
+      ]);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content:
+            '📸 Ich sehe dein Bild! Beschreib mir kurz, was darauf zu sehen ist – dann kann ich dir helfen.',
+        },
+      ]);
+
       setUploading(false);
     };
     reader.readAsDataURL(file);
   };
 
   // ============================================
-  // sendMessage
+  // SEND MESSAGE
   // ============================================
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
-    
-    const userMessage = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMessage]);
+
+    const userMessage: Message = { role: 'user', content: input };
+    setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setLoading(true);
-    
+
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
-    
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input })
+        body: JSON.stringify({ message: input }),
       });
-      
-      const data = await res.json();
-      
-      setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
-setLoading(false);
-      
-    } catch (error) {
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
-        content: 'Fehler aufgetreten. Bitte versuch es nochmal.' 
-      }]);
+
+      const data = (await res.json()) as { response: string };
+
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: data.response },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: 'Fehler aufgetreten. Bitte versuch es nochmal.' },
+      ]);
+    } finally {
       setLoading(false);
     }
   };
 
-  // Enter = send, Shift+Enter = neue Zeile
-  const handleKeyDown = (e) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -152,46 +194,50 @@ setLoading(false);
   };
 
   // ============================================
-  // FEEDBACK-FUNKTION (wichtig!)
+  // FEEDBACK
   // ============================================
-  const saveFeedback = async (feedback: 'gut' | 'schlecht' | 'neutral', korrektur?: string) => {
+  const saveFeedback = async (feedback: Feedback, korrektur?: string) => {
     const letzteNachricht = messages[messages.length - 1];
     const vorherigeNachricht = messages[messages.length - 2];
-    
-    if (letzteNachricht?.role === 'assistant' && vorherigeNachricht?.role === 'user') {
-      let isTrusted = false;
-      if (userEmail) {
-        try {
-          const { data: trusted } = await supabase
-            .from('trusted_users')
-            .select('*')
-            .eq('email', userEmail)
-            .maybeSingle();
-          isTrusted = !!trusted;
-        } catch (e) { console.log('Fehler bei Trusted-Check:', e); }
+
+    if (letzteNachricht?.role !== 'assistant' || vorherigeNachricht?.role !== 'user') return;
+
+    let isTrusted = false;
+    if (userEmail) {
+      try {
+        const { data: trusted } = await supabase
+          .from('trusted_users')
+          .select('*')
+          .eq('email', userEmail)
+          .maybeSingle();
+        isTrusted = !!trusted;
+      } catch (e) {
+        console.log('Fehler bei Trusted-Check:', e);
       }
-      
-      const table = isTrusted ? 'user_feedback' : 'user_feedback_temp';
-      
-      const { error } = await supabase
-        .from(table)
-        .insert([{
-          question: vorherigeNachricht.content,
-          ai_response: letzteNachricht.content,
-          user_feedback: feedback,
-          corrected_response: korrektur || null,
-          language: 'tigrinya',
-          session_id: localStorage.getItem('session_id') || 'test-session'
-        }]);
-      
-      if (error) {
-        console.error('Feedback Fehler:', error);
-        alert('❌ Fehler beim Speichern');
-      } else {
-        alert(isTrusted 
-          ? '✅ Danke Beta-Tester! Dein Feedback trainiert die KI sofort!' 
-          : '✅ Danke! Dein Feedback wird geprüft.');
-      }
+    }
+
+    const table = isTrusted ? 'user_feedback' : 'user_feedback_temp';
+
+    const { error } = await supabase.from(table).insert([
+      {
+        question: vorherigeNachricht.content,
+        ai_response: letzteNachricht.content,
+        user_feedback: feedback,
+        corrected_response: korrektur ?? null,
+        language: 'tigrinya',
+        session_id: localStorage.getItem('session_id') ?? 'test-session',
+      },
+    ]);
+
+    if (error) {
+      console.error('Feedback Fehler:', error);
+      alert('❌ Fehler beim Speichern');
+    } else {
+      alert(
+        isTrusted
+          ? '✅ Danke Beta-Tester! Dein Feedback trainiert die KI sofort!'
+          : '✅ Danke! Dein Feedback wird geprüft.'
+      );
     }
   };
 
@@ -199,7 +245,7 @@ setLoading(false);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-emerald-950">
-      {/* Header - WhatsApp Style */}
+      {/* Header */}
       <header className="bg-emerald-700 shadow-lg sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -245,14 +291,16 @@ setLoading(false);
                       🤖
                     </div>
                   )}
-                  <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${
-                    msg.role === 'user'
-                      ? 'bg-emerald-600 text-white rounded-br-sm'
-                      : 'bg-gray-700 text-gray-100 rounded-bl-sm'
-                  }`}>
+                  <div
+                    className={`max-w-[75%] rounded-2xl px-4 py-2 ${
+                      msg.role === 'user'
+                        ? 'bg-emerald-600 text-white rounded-br-sm'
+                        : 'bg-gray-700 text-gray-100 rounded-bl-sm'
+                    }`}
+                  >
                     {msg.image && (
-                      <img 
-                        src={msg.image} 
+                      <img
+                        src={msg.image}
                         alt="Bild"
                         className="max-w-[200px] max-h-[200px] rounded-lg mb-2 cursor-pointer"
                         onClick={() => window.open(msg.image, '_blank')}
@@ -269,8 +317,8 @@ setLoading(false);
                     </div>
                   )}
                 </div>
-                
-                {/* 🔥 FEEDBACK-BUTTONS (unter KI-Antworten) */}
+
+                {/* Feedback-Buttons */}
                 {msg.role === 'assistant' && (
                   <div className="flex gap-2 mt-1 ml-10">
                     <button
@@ -282,7 +330,7 @@ setLoading(false);
                     <button
                       onClick={() => {
                         const korrektur = prompt('Deine Korrektur eingeben (optional):');
-                        saveFeedback('schlecht', korrektur || undefined);
+                        saveFeedback('schlecht', korrektur ?? undefined);
                       }}
                       className="text-[11px] bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full hover:bg-red-600/30 hover:text-red-300 transition-colors"
                     >
@@ -293,6 +341,7 @@ setLoading(false);
               </div>
             ))
           )}
+
           {loading && (
             <div className="flex justify-start mb-3">
               <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-sm mr-2">
@@ -301,12 +350,13 @@ setLoading(false);
               <div className="bg-gray-700 rounded-2xl rounded-bl-sm px-4 py-3">
                 <div className="flex gap-1">
                   <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
-                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></span>
-                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.4s'}}></span>
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
                 </div>
               </div>
             </div>
           )}
+
           {uploading && (
             <div className="flex justify-end mb-3">
               <div className="bg-gray-700 rounded-2xl px-4 py-2 text-gray-300 text-sm">
@@ -314,6 +364,7 @@ setLoading(false);
               </div>
             </div>
           )}
+
           {isListening && (
             <div className="flex justify-start mb-3">
               <div className="bg-gray-700 rounded-2xl px-4 py-2 text-gray-300 text-sm flex items-center gap-2">
@@ -323,18 +374,19 @@ setLoading(false);
               </div>
             </div>
           )}
+
           <div ref={messagesEndRef} />
         </div>
 
-        {/* WhatsApp Style Input Area */}
+        {/* Input Area */}
         <div className="border-t border-gray-700 p-3 bg-gray-800/90 backdrop-blur-sm">
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
-            {/* Attachment Button */}
+            {/* Attachment */}
             <label className="cursor-pointer text-gray-400 hover:text-emerald-400 transition-colors p-2">
-              <input 
-                type="file" 
-                accept="image/*" 
-                className="hidden" 
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
                 onChange={handleImageUpload}
                 disabled={uploading || loading}
               />
@@ -342,8 +394,8 @@ setLoading(false);
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
               </svg>
             </label>
-            
-            {/* Voice Button */}
+
+            {/* Voice */}
             <button
               onClick={startListening}
               disabled={loading || uploading || isListening}
@@ -355,7 +407,7 @@ setLoading(false);
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
               </svg>
             </button>
-            
+
             {/* Text Input */}
             <div className="flex-1 bg-gray-700 rounded-2xl px-4 py-2">
               <textarea
@@ -373,8 +425,8 @@ setLoading(false);
                 disabled={loading || uploading || isListening}
               />
             </div>
-            
-            {/* Send Button */}
+
+            {/* Send */}
             <button
               onClick={sendMessage}
               disabled={!input.trim() || loading || uploading || isListening}
@@ -389,8 +441,7 @@ setLoading(false);
               </svg>
             </button>
           </div>
-          
-          {/* Footer Info */}
+
           <div className="text-center text-[10px] text-gray-500 mt-2">
             🛡️ Ende-zu-Ende verschlüsselt | habesha.Ai
           </div>
