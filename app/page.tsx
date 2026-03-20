@@ -11,7 +11,7 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [userEmail, setUserEmail] = useState('');
   const [isListening, setIsListening] = useState(false);
-  const messagesEndRef = useRef(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null); // ← GEÄNDERT!
   const inputRef = useRef(null);
 
   useEffect(() => {
