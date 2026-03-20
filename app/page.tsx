@@ -28,12 +28,13 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
+  // Auto-resize Textare
   // Auto-resize Textarea
-  const autoResize = (e) => {
-    const textarea = e.target;
-    textarea.style.height = 'auto';
-    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-  };
+const autoResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  const textarea = e.target;
+  textarea.style.height = 'auto';
+  textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+};
 
   // ============================================
   // 🎤 VOICE INPUT
