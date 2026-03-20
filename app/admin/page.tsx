@@ -1,13 +1,34 @@
+// app/admin/page.tsx
 'use client';
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
+// Definiere die Typen für die Daten
+type Feedback = {
+  id: string;
+  question: string;
+  ai_response: string;
+  user_feedback: string;
+  corrected_response: string | null;
+  language: string;
+  user_id: string | null;
+  session_id: string | null;
+  created_at: string;
+};
+
+type TrustedUser = {
+  id: string;
+  email: string;
+  role: string;
+  active: boolean;
+  created_at: string;
+};
+
 export default function AdminDashboard() {
-  const [feedbacks, setFeedbacks] = useState([]);
-  const [trustedUsers, setTrustedUsers] = useState([]);
+  const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
+  const [trustedUsers, setTrustedUsers] = useState<TrustedUser[]>([]);
   const [newEmail, setNewEmail] = useState('');
 
-  // Ungeprüftes Feedback laden
   useEffect(() => {
     loadTempFeedback();
     loadTrustedUsers();
@@ -63,18 +84,18 @@ export default function AdminDashboard() {
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
             placeholder="Email eingeben..."
-            className="flex-1 bg-gray-700 p-2 rounded"
+            className="flex-1 bg-gray-700 p-2 rounded text-white"
           />
           <button
             onClick={addTester}
-            className="bg-green-600 px-4 py-2 rounded hover:bg-green-700"
+            className="bg-emerald-600 px-4 py-2 rounded hover:bg-emerald-700"
           >
             Hinzufügen
           </button>
         </div>
         
         <div className="space-y-2">
-          {trustedUsers.map((user: any) => (
+          {trustedUsers.map((user) => (
             <div key={user.id} className="flex justify-between items-center bg-gray-700 p-2 rounded">
               <span>{user.email} ({user.role})</span>
               <button
@@ -93,12 +114,12 @@ export default function AdminDashboard() {
         <h2 className="text-xl font-bold mb-4">📝 Ungeprüftes Feedback ({feedbacks.length})</h2>
         
         <div className="space-y-4">
-          {feedbacks.map((fb: any) => (
+          {feedbacks.map((fb) => (
             <div key={fb.id} className="bg-gray-700 p-4 rounded border border-gray-600">
               <p className="text-sm text-gray-400">
                 {new Date(fb.created_at).toLocaleString()}
               </p>
-              <p className="mt-2"><span className="text-green-400">Frage:</span> {fb.question}</p>
+              <p className="mt-2"><span className="text-emerald-400">Frage:</span> {fb.question}</p>
               <p><span className="text-blue-400">KI:</span> {fb.ai_response}</p>
               {fb.corrected_response && (
                 <p><span className="text-yellow-400">Korrektur:</span> {fb.corrected_response}</p>
@@ -107,7 +128,7 @@ export default function AdminDashboard() {
               
               <button
                 onClick={() => approveFeedback(fb.id)}
-                className="mt-3 bg-green-600 px-4 py-2 rounded hover:bg-green-700"
+                className="mt-3 bg-emerald-600 px-4 py-2 rounded hover:bg-emerald-700"
               >
                 ✅ Freigeben & ins Training übernehmen
               </button>
