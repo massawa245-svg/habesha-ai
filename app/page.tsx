@@ -149,43 +149,50 @@ export default function Home() {
   };
 
   // ============================================
-  // SEND MESSAGE
-  // ============================================
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return;
+ // ============================================
+// SEND MESSAGE (MIT GESPRÄCHSVERLAUF)
+// ============================================
+const sendMessage = async () => {
+  if (!input.trim() || loading) return;
 
-    const userMessage: Message = { role: 'user', content: input };
-    setMessages((prev) => [...prev, userMessage]);
-    setInput('');
-    setLoading(true);
+  const userMessage: Message = { role: 'user', content: input };
+  const newMessages = [...messages, userMessage];
+  setMessages(newMessages);
+  setInput('');
+  setLoading(true);
 
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
-    }
+  if (inputRef.current) {
+    inputRef.current.style.height = 'auto';
+  }
 
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
-      });
+  try {
+    // Verlauf für API vorbereiten (nur Text, ohne Bilder)
+    const historyForApi = newMessages.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
 
-      const data = (await res.json()) as { response: string };
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        message: input,
+        history: historyForApi  // ← Gesprächsverlauf mitschicken!
+      }),
+    });
 
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.response },
-      ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: 'Fehler aufgetreten. Bitte versuch es nochmal.' },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const data = (await res.json()) as { response: string };
 
+    setMessages([...newMessages, { role: 'assistant', content: data.response }]);
+  } catch {
+    setMessages([...newMessages, { 
+      role: 'assistant', 
+      content: 'Fehler aufgetreten. Bitte versuch es nochmal.' 
+    }]);
+  } finally {
+    setLoading(false);
+  }
+};
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

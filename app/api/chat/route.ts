@@ -1,4 +1,4 @@
-// app/api/chat/route.ts - mit aktuellen Groq-Modellen!
+// app/api/chat/route.ts - MIT GESPRÄCHSVERLAUF!
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
@@ -16,9 +16,9 @@ const deepseek = new OpenAI({
 
 export async function POST(req: Request) {
   try {
-    const { message } = await req.json();
+    const { message, history = [] } = await req.json(); // ← history kommt jetzt mit!
 
-    // System-Prompt (unverändert, passt gut)
+    // System-Prompt (unverändert)
     const systemPrompt = `Du bist eine lustige, hilfreiche Tigrinya KI mit Charakter!
 
 PERSÖNLICHKEIT:
@@ -43,14 +43,18 @@ ANTWORTEN:
 - KEINE langen Erklärungen
 - Bei Korrekturen: freundlich und präzise`;
 
+    // Nachrichten für API: System + bisheriger Verlauf + neue Nachricht
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...history,  // ← HIER kommt der Gesprächsverlauf rein!
+      { role: "user", content: message }
+    ];
+
     // 🔥 VERSUCHE ZUERST GROQ mit AKTUELLEM MODELL
     try {
       const completion = await groq.chat.completions.create({
-        model: "llama-3.3-70b-versatile", // ✅ AKTUELLES Modell!
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ],
+        model: "llama-3.3-70b-versatile",
+        messages: messages,
         max_tokens: 250,
         temperature: 0.7,
       });
@@ -65,10 +69,7 @@ ANTWORTEN:
       // Fallback zu DeepSeek
       const completion = await deepseek.chat.completions.create({
         model: "deepseek-chat",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ],
+        messages: messages,
         max_tokens: 250,
         temperature: 0.7,
       });
