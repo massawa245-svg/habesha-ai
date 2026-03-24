@@ -11,6 +11,7 @@
   "dependencies": {
     "@google-cloud/vision": "^5.3.5",
     "@stripe/stripe-js": "^8.11.0",
+    "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/supabase-js": "^2.99.3",
     "axios": "^1.13.6",
     "cheerio": "^1.2.0",
