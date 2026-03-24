@@ -72,7 +72,7 @@ ANTWORTEN:
         temperature: 0.7,
       });
 
-      responseText = completion.choices[0].message.content;
+      responseText = completion.choices[0].message.content ?? '';
 
       // 🔥 Limit erhöhen (nur wenn nicht Premium)
       if (userId) {
@@ -91,7 +91,7 @@ ANTWORTEN:
         temperature: 0.7,
       });
 
-      responseText = completion.choices[0].message.content;
+      responseText = completion.choices[0].message.content ?? '';
 
       if (userId) {
         const { isPremium } = await checkPremium(userId);
@@ -150,7 +150,7 @@ Antworte NUR mit dem Titel, ohne Anführungszeichen.`;
             temperature: 0.5,
           });
           
-          let title = titleCompletion.choices[0].message.content.replace(/["']/g, '').trim();
+          let title = (titleCompletion.choices[0].message.content ?? '').replace(/["']/g, '').trim();
           
           // Begrenze Titel auf 50 Zeichen
           if (title.length > 50) title = title.substring(0, 47) + '...';
