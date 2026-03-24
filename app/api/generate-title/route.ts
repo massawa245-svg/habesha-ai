@@ -19,6 +19,6 @@ export async function POST(req: Request) {
   });
   
   return NextResponse.json({ 
-    title: completion.choices[0].message.content.replace(/["']/g, '').trim() 
+    title: (completion.choices[0].message.content ?? '').replace(/["']/g, '').trim()
   });
 }
