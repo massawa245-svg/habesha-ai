@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { checkPremium, incrementUsage } from '@/lib/premium';
 import { supabase } from '@/lib/supabase';
+import { checkPremium, incrementUsage } from '@/lib/premium';
 
 const groq = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
@@ -13,168 +13,167 @@ const deepseek = new OpenAI({
   baseURL: 'https://api.deepseek.com',
 });
 
+// 🔥 WORD EXTRACTION (einfach, schnell, stabil)
+function extractRelevantWords(message: string): string[] {
+  const stopWords = ['der', 'die', 'das', 'und', 'oder', 'aber', 'nicht', 'ein', 'eine', 'einer', 'für', 'auf', 'bei'];
+  return message
+    .toLowerCase()
+    .replace(/[.,!?;:()]/g, '')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stopWords.includes(w));
+}
+
+// 🔥 INTENT DETECTION
+function detectIntent(message: string): 'translation' | 'definition' | 'conversation' {
+  const msg = message.toLowerCase();
+  if (msg.includes('wie sagt man') || msg.includes('bedeutet') || msg.includes('was heißt') || 
+      msg.includes('übersetze') || msg.includes('was ist') || msg.includes('was bedeutet')) {
+    return 'translation';
+  }
+  if (msg.includes('erkläre') || msg.includes('was ist') || msg.includes('hilf mir')) {
+    return 'definition';
+  }
+  return 'conversation';
+}
+
 export async function POST(req: Request) {
   try {
-    const { message, history = [], userId, conversationId, isNewConversation } = await req.json();
-    
-    // 🔥 FREE LIMIT CHECK (für Chats)
+    const { message, history = [], userId } = await req.json();
+
+    // 🔥 FREE LIMIT CHECK
     if (userId) {
       const { isPremium, remaining } = await checkPremium(userId);
-      
       if (!isPremium && remaining <= 0) {
-        return NextResponse.json({ 
-          response: `💬 Du hast dein kostenloses Limit von 5 Anfragen pro Tag erreicht.
-
-💎 Mit Premium (9,99€/Monat) kannst du unbegrenzt chatten und Briefe analysieren lassen.
-
-👉 Klick auf den "💎 Premium" Button oben rechts in der App!` 
+        return NextResponse.json({
+          response: `💎 **Kostenloses Limit erreicht (5/Tag)**\n\n🚀 Upgrade auf Premium für unbegrenzte Chats, Brief-Analysen und mehr!\n\n👉 Klick auf den "💎 Premium" Button oben rechts.`
         });
       }
     }
 
-    const systemPrompt = `Du bist eine lustige, hilfreiche Tigrinya KI mit Charakter!
+    // 🔥 WÖRTERBUCH-SUCHE (schnell, stabil)
+    const searchWords = extractRelevantWords(message);
+    let woerterbuchContext = '';
+    let relevanteWoerter: any[] = [];
 
-PERSÖNLICHKEIT:
-- Freundlich wie ein Eritreer
-- Humorvoll, aber respektvoll
-- Hilfsbereit ohne Ende
-- Ehrlich: "Ich bin eine KI, kein Mensch"
+    if (searchWords.length > 0) {
+      const filters = searchWords.map(w => 
+        `german.ilike.%${w}%,tigrinya_word.ilike.%${w}%`
+      ).join(',');
 
-WICHTIGSTE REGELN:
-1. Bei "ich liebe dich" → lustig antworten, nicht erklären
-2. KEINE langen Analysen
-3. WIRKLICH helfen bei echten Problemen (Briefe, Ämter, etc.)
-4. Bei Flirten: Freundlich bleiben und Hilfe anbieten
+      const { data } = await supabase
+        .from('dictionary')
+        .select('tigrinya_word, german, example_sentence')
+        .or(filters)
+        .limit(6);
 
-SPRACHE:
-- Wenn auf Tigrinya gefragt → auf Tigrinya antworten
-- Wenn gemischt → kreativ mischen
-- Immer herzlich bleiben!
+      relevanteWoerter = data || [];
 
-ANTWORTEN:
-- KURZ und direkt (maximal 2-3 Sätze)
-- KEINE langen Erklärungen
-- Bei Korrekturen: freundlich und präzise`;
+      if (relevanteWoerter.length > 0) {
+        woerterbuchContext = `
+📚 **WÖRTERBUCH – VERWENDE DIESE WÖRTER:**
 
+${relevanteWoerter.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}
+
+⚠️ Wenn ein Wort im Wörterbuch passt, benutze es!`;
+      }
+    }
+
+    // 🔥 FALLBACK: 3 zufällige Wörter (nie leerer Kontext)
+    if (relevanteWoerter.length === 0) {
+      const { data: random } = await supabase
+        .from('dictionary')
+        .select('tigrinya_word, german')
+        .limit(3);
+      
+      if (random && random.length > 0) {
+        woerterbuchContext = `
+📚 **WÖRTER ZUM LERNEN:**
+${random.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}`;
+      }
+    }
+
+    // 🔥 INTENT-INSTRUKTIONEN
+    const intent = detectIntent(message);
+    let intentInstruction = '';
+    switch (intent) {
+      case 'translation':
+        intentInstruction = `⚠️ Übersetzungs-Modus: Gib NUR die Übersetzung, KEINE Erklärung, maximal 1 Satz.`;
+        break;
+      case 'definition':
+        intentInstruction = `⚠️ Erklärungs-Modus: Erkläre kurz (1-2 Sätze), klar und hilfreich.`;
+        break;
+      default:
+        intentInstruction = `⚠️ Konversations-Modus: Antworte kurz (maximal 2 Sätze), freundlich und hilfsbereit.`;
+    }
+
+    // 🔥 SYSTEM PROMPT
+    const systemPrompt = `Du bist eine Tigrinya-KI-Assistentin für Eritreer und Äthiopier.
+
+${woerterbuchContext}
+
+${intentInstruction}
+
+REGELN:
+- Wenn der Nutzer DEUTSCH spricht → antworte auf DEUTSCH
+- Wenn der Nutzer TIGRINYA spricht → antworte auf TIGRINYA
+- Kurze, klare Sätze
+- Freundlich und hilfsbereit
+
+BEISPIELE:
+- "Hallo" → "ሰላም"
+- "Wie geht es dir?" → "ከመይ ኣለኻ?"
+- "Mir geht es gut" → "ጽቡቕ ኣለኹ"
+- "Danke" → "የቐንየለይ"`;
+
+    // Nur letzte 6 Nachrichten (spart Tokens)
+    const lastMessages = history.slice(-6);
     const messages = [
       { role: "system", content: systemPrompt },
-      ...history,
+      ...lastMessages,
       { role: "user", content: message }
     ];
 
+    // 🔥 KI-ANTWORT
     let responseText = '';
 
     try {
       const completion = await groq.chat.completions.create({
         model: "llama-3.3-70b-versatile",
-        messages: messages,
-        max_tokens: 250,
-        temperature: 0.7,
+        messages,
+        max_tokens: 300,
+        temperature: 0.3,
       });
-
-      responseText = completion.choices[0].message.content ?? '';
-
-      // 🔥 Limit erhöhen (nur wenn nicht Premium)
-      if (userId) {
-        const { isPremium } = await checkPremium(userId);
-        if (!isPremium) {
-          await incrementUsage(userId, false);
-        }
-      }
+      responseText = completion.choices?.[0]?.message?.content || 'Entschuldigung, keine Antwort erhalten.';
     } catch (groqError) {
       console.log('Groq Fehler, Fallback zu DeepSeek:', groqError);
-      
-      const completion = await deepseek.chat.completions.create({
-        model: "deepseek-chat",
-        messages: messages,
-        max_tokens: 250,
-        temperature: 0.7,
-      });
-
-      responseText = completion.choices[0].message.content ?? '';
-
-      if (userId) {
-        const { isPremium } = await checkPremium(userId);
-        if (!isPremium) {
-          await incrementUsage(userId, false);
-        }
-      }
-    }
-    
-    // 🔥 CHAT-VERLAUF IN DATENBANK SPEICHERN
-    if (userId && conversationId) {
       try {
-        // 1. User-Nachricht speichern
-        await supabase.from('messages').insert({
-          conversation_id: conversationId,
-          role: 'user',
-          content: message,
-          created_at: new Date()
+        const completion = await deepseek.chat.completions.create({
+          model: "deepseek-chat",
+          messages,
+          max_tokens: 300,
+          temperature: 0.3,
         });
-        
-        // 2. KI-Antwort speichern
-        await supabase.from('messages').insert({
-          conversation_id: conversationId,
-          role: 'assistant',
-          content: responseText,
-          created_at: new Date()
-        });
-        
-        // 3. Konversation aktualisieren (updated_at)
-        await supabase
-          .from('conversations')
-          .update({ updated_at: new Date() })
-          .eq('id', conversationId);
-        
-        // 4. Automatischen Titel generieren (nur bei neuer Konversation)
-        if (isNewConversation) {
-          const titlePrompt = `Erstelle einen kurzen Titel (maximal 5 Wörter) für dieses Gespräch auf Deutsch.
-          
-Kategorien: AOK, Finanzamt, Jobcenter, Liebe, Familie, Freunde, Gesundheit, Schule, Arbeit, Steuer, Versicherung.
-
-Beispiele:
-- "AOK Beitragserhöhung"
-- "Steuererklärung Hilfe"
-- "Liebesgeständnis"
-- "Jobcenter Termin"
-- "Krankenkasse Frage"
-
-User-Nachricht: "${message}"
-
-Antworte NUR mit dem Titel, ohne Anführungszeichen.`;
-          
-          const titleCompletion = await groq.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
-            messages: [{ role: "user", content: titlePrompt }],
-            max_tokens: 20,
-            temperature: 0.5,
-          });
-          
-          let title = (titleCompletion.choices[0].message.content ?? '').replace(/["']/g, '').trim();
-          
-          // Begrenze Titel auf 50 Zeichen
-          if (title.length > 50) title = title.substring(0, 47) + '...';
-          
-          await supabase
-            .from('conversations')
-            .update({ title })
-            .eq('id', conversationId);
-        }
-        
-      } catch (dbError) {
-        console.error('Fehler beim Speichern in DB:', dbError);
+        responseText = completion.choices?.[0]?.message?.content || 'Entschuldigung, keine Antwort erhalten.';
+      } catch (deepseekError) {
+        console.error('DeepSeek auch fehlgeschlagen:', deepseekError);
+        responseText = 'Entschuldigung, gerade technische Probleme. Bitte versuch es später nochmal.';
       }
     }
 
-    return NextResponse.json({ 
-      response: responseText,
-      provider: 'groq'
-    });
-    
+    // 🔥 LIMIT ERHÖHEN
+    if (userId) {
+      const { isPremium } = await checkPremium(userId);
+      if (!isPremium) {
+        await incrementUsage(userId, false);
+      }
+    }
+
+    return NextResponse.json({ response: responseText });
+
   } catch (error) {
     console.error('API Fehler:', error);
-    return NextResponse.json({ 
-      response: 'Entschuldigung, gerade technische Probleme. Bitte versuch es später nochmal.' 
+    return NextResponse.json({
+      response: 'Entschuldigung, gerade technische Probleme. Bitte versuch es später nochmal.'
     });
   }
 }
