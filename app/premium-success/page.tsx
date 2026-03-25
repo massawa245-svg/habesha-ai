@@ -1,17 +1,15 @@
 'use client';
-import { useEffect } from 'react';
+import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
-export default function PremiumSuccess() {
+function PremiumSuccessContent() {
   const searchParams = useSearchParams();
   const sessionId = searchParams.get('session_id');
   
-  useEffect(() => {
-    // Hier könntest du die Session bestätigen
-    setTimeout(() => {
-      window.location.href = '/';
-    }, 3000);
-  }, []);
+  // Nach 3 Sekunden zur Startseite weiterleiten
+  setTimeout(() => {
+    window.location.href = '/';
+  }, 3000);
   
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900">
@@ -22,5 +20,13 @@ export default function PremiumSuccess() {
         <p className="text-gray-500 mt-4">Du wirst in 3 Sekunden weitergeleitet...</p>
       </div>
     </div>
+  );
+}
+
+export default function PremiumSuccessPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">Lade...</div>}>
+      <PremiumSuccessContent />
+    </Suspense>
   );
 }
