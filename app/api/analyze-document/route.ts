@@ -22,17 +22,17 @@ const visionClient = new ImageAnnotatorClient({
 });
 
 // ============================================
-// 🌍 USER SPRACHE ERKENNEN (WICHTIG!)
+// 🌍 USER SPRACHE ERKENNEN
 // ============================================
 function detectUserLanguage(text: string): 'de' | 'ti' | 'en' {
   if (!text) return 'de';
-
+  
+  // Übersetzungswunsch → Deutsch antworten
+  if (text.match(/wie sagt man|übersetze|was heißt/i)) return 'de';
+  
   if (/[\u1200-\u137F]/.test(text)) return 'ti';
-
-  if (text.match(/\b(the|and|what|how|why|please|hello|thanks)\b/i)) {
-    return 'en';
-  }
-
+  if (text.match(/\b(the|and|what|how|why|please|hello|thanks)\b/i)) return 'en';
+  
   return 'de';
 }
 
@@ -75,7 +75,7 @@ async function extractTextFromImage(base64Image: string): Promise<string> {
 }
 
 // ============================================
-// 🤖 KI MIT FALLBACK + SAFE RESPONSE
+// 🤖 KI MIT FALLBACK
 // ============================================
 async function askAI(messages: any[]): Promise<string> {
   try {
@@ -113,7 +113,7 @@ async function askAI(messages: any[]): Promise<string> {
 }
 
 // ============================================
-// 🤖 DOCUMENT EXPLAINER (10/10 PROMPT)
+// 🤖 DOCUMENT EXPLAINER
 // ============================================
 async function explainDocument(ocrText: string, userLang: 'de' | 'ti' | 'en') {
 
@@ -165,14 +165,14 @@ export async function POST(req: Request) {
 
     if (!image) {
       return NextResponse.json({
-        response: '📸 Bitte Bild hochladen.'
+        response: '📸 **Bitte lade ein Bild hoch**\n\nMach ein Foto von deinem Brief – die KI erklärt ihn dir auf Tigrinya.'
       });
     }
 
     // 🔒 SIZE LIMIT
     if (image.length > 5_500_000) {
       return NextResponse.json({
-        response: '📸 Bild zu groß (max 5MB).'
+        response: '📸 **Bild zu groß**\n\nDas Bild ist größer als 5 MB. Bitte mach ein kleineres Foto oder komprimier es.'
       });
     }
 
@@ -182,7 +182,16 @@ export async function POST(req: Request) {
       premium = await checkPremium(userId);
       if (!premium.isPremium && premium.remaining <= 0) {
         return NextResponse.json({
-          response: '💎 Limit erreicht. Upgrade nötig.'
+          response: `💎 **Kostenloses Limit erreicht (5/Tag)**
+
+Du hast heute deine 5 kostenlosen Analysen genutzt.
+
+🚀 **Premium** (9,99€/Monat):
+- Unbegrenzte Brief-Analysen
+- Schnellere Antworten
+- Keine Werbung
+
+👉 Klick auf den "💎 Premium" Button oben rechts!`
         });
       }
     }
@@ -190,21 +199,42 @@ export async function POST(req: Request) {
     // 📸 OCR
     const ocrText = await extractTextFromImage(image);
 
-    if (!ocrText || ocrText.length < 30) {
+    if (!ocrText || ocrText.length < 20) {
       return NextResponse.json({
-        response: '❌ Kein klarer Text erkannt. Bitte besseres Foto.'
+        response: `📸 **Kein Text erkannt**
+
+Kein Problem – das passiert manchmal. Hier sind ein paar Tipps:
+
+📱 **Kamera ruhig halten**  
+Tippe auf den Bildschirm, um zu fokussieren
+
+💡 **Gute Beleuchtung**  
+Mach das Foto bei Tageslicht oder mit einer Lampe
+
+📄 **Gerade halten**  
+Der Brief sollte nicht schräg sein
+
+✍️ **Schriftgröße**  
+Halte die Kamera nah genug ran
+
+**👉 Probiere es gleich nochmal mit einem neuen Foto!**
+
+*Tipp: Schwarzer Text auf weißem Hintergrund funktioniert am besten.*`
       });
     }
 
+    console.log('📝 OCR erkannt:', ocrText.substring(0, 200));
+
     // 🌍 USER LANGUAGE (NICHT OCR!)
     const userLang = detectUserLanguage(message);
+    console.log('🌍 Sprache:', userLang);
 
     // 🤖 EXPLAIN
     const explanation = await explainDocument(ocrText, userLang);
 
     if (!explanation) {
       return NextResponse.json({
-        response: '❌ KI Fehler. Bitte nochmal versuchen.'
+        response: '❌ **Technischer Fehler**\n\nDie KI konnte gerade nicht antworten. Bitte versuche es in ein paar Sekunden nochmal.\n\nFalls das Problem bleibt: massawa245@gmail.com'
       });
     }
 
@@ -232,7 +262,7 @@ export async function POST(req: Request) {
     console.error('API Fehler:', error);
 
     return NextResponse.json({
-      response: '❌ Fehler. Bitte später erneut versuchen.'
+      response: '❌ **Fehler bei der Analyse**\n\nBitte versuche es später nochmal.\n\nWenn das Problem bleibt, schreib uns: massawa245@gmail.com'
     });
   }
 }
