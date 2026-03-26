@@ -269,51 +269,56 @@ export default function Home() {
   // FEEDBACK
   // ============================================
   const saveFeedback = async (feedback: Feedback, korrektur?: string) => {
-    const letzteNachricht = messages[messages.length - 1];
-    const vorherigeNachricht = messages[messages.length - 2];
-    if (letzteNachricht?.role !== 'assistant' || vorherigeNachricht?.role !== 'user') return;
-    let isTrusted = false;
-    if (userEmail) {
-      try {
-        const { data: trusted } = await supabase
-          .from('trusted_users')
-          .select('*')
-          .eq('email', userEmail)
-          .maybeSingle();
-        isTrusted = !!trusted;
-      } catch (e) {
-        console.log('Fehler bei Trusted-Check:', e);
+    try {
+      const letzteNachricht = messages[messages.length - 1];
+      const vorherigeNachricht = messages[messages.length - 2];
+      if (letzteNachricht?.role !== 'assistant' || vorherigeNachricht?.role !== 'user') return;
+
+      let isTrusted = false;
+      if (userEmail) {
+        try {
+          const { data: trusted } = await supabase
+            .from('trusted_users')
+            .select('*')
+            .eq('email', userEmail)
+            .maybeSingle();
+          isTrusted = !!trusted;
+        } catch (e) {
+          console.log('Fehler bei Trusted-Check:', e);
+        }
       }
-    }
-    const table = isTrusted ? 'user_feedback' : 'user_feedback_temp';
-    const { error } = await supabase.from(table).insert([
-      {
-        question: vorherigeNachricht.content,
-        ai_response: letzteNachricht.content,
-        user_feedback: feedback,
-        corrected_response: korrektur ?? null,
-        language: 'tigrinya',
-        session_id: localStorage.getItem('session_id') ?? 'test-session',
-      },
-    ]);
-    if (error) {
-      console.error('Feedback Fehler:', error);
-      alert('❌ Fehler beim Speichern');
-    } else {
-      alert(
-        isTrusted
-          ? '✅ Danke Beta-Tester! Dein Feedback trainiert die KI sofort!'
-          : '✅ Danke! Dein Feedback wird geprüft.'
-      );
+
+      const table = isTrusted ? 'user_feedback' : 'user_feedback_temp';
+
+      const { error } = await supabase.from(table).insert([
+        {
+          question: vorherigeNachricht.content,
+          ai_response: letzteNachricht.content,
+          user_feedback: feedback,
+          corrected_response: korrektur ?? null,
+          language: 'tigrinya',
+          user_id: user?.id || null,
+          session_id: localStorage.getItem('session_id') ?? 'test-session',
+        },
+      ]);
+
+      if (error) {
+        console.error('Feedback Fehler:', error);
+      }
+    } catch (error) {
+      console.error('Feedback Exception:', error);
     }
   };
 
+  // ============================================
+  // RENDER
+  // ============================================
   if (!mounted) return null;
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-emerald-950 overflow-hidden">
 
-      {/* Overlay — schließt Sidebar beim Klicken daneben */}
+      {/* Overlay */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-10"
@@ -328,7 +333,6 @@ export default function Home() {
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
         <div className="p-4 flex flex-col h-full">
-          {/* Sidebar Header */}
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-white font-semibold text-base">Meine Chats</h2>
             <button
@@ -339,7 +343,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Neuer Chat Button */}
           <button
             onClick={startNewChat}
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg mb-4 transition-colors text-sm font-medium"
@@ -347,7 +350,6 @@ export default function Home() {
             + Neuer Chat
           </button>
 
-          {/* Conversation List */}
           <div className="space-y-1 overflow-y-auto flex-1">
             {conversations.length === 0 && (
               <p className="text-gray-500 text-xs text-center mt-4">Noch keine Chats</p>
@@ -385,7 +387,6 @@ export default function Home() {
         <header className="bg-emerald-700 shadow-lg z-10 flex-shrink-0">
           <div className="px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* Hamburger Button — immer sichtbar */}
               <button
                 onClick={() => setSidebarOpen(!sidebarOpen)}
                 className="text-white p-1.5 hover:bg-white/10 rounded-lg transition-colors flex-shrink-0"
@@ -397,7 +398,6 @@ export default function Home() {
                   <span className="block w-5 h-0.5 bg-white rounded-full"></span>
                 </div>
               </button>
-
               <div className="w-9 h-9 bg-white/20 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0">
                 🇪🇷
               </div>
@@ -501,7 +501,6 @@ export default function Home() {
                     )}
                   </div>
 
-                  {/* Feedback-Buttons */}
                   {msg.role === 'assistant' && (
                     <div className="flex gap-2 mt-1 ml-10">
                       <button
@@ -565,7 +564,6 @@ export default function Home() {
         {/* Input Area */}
         <div className="border-t border-gray-700 p-3 bg-gray-800/90 backdrop-blur-sm flex-shrink-0">
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
-            {/* Attachment */}
             <label className="cursor-pointer text-gray-400 hover:text-emerald-400 transition-colors p-2">
               <input
                 type="file"
@@ -579,7 +577,6 @@ export default function Home() {
               </svg>
             </label>
 
-            {/* Voice */}
             <button
               onClick={startListening}
               disabled={loading || uploading || isListening}
@@ -592,7 +589,6 @@ export default function Home() {
               </svg>
             </button>
 
-            {/* Text Input */}
             <div className="flex-1 bg-gray-700 rounded-2xl px-4 py-2">
               <textarea
                 ref={inputRef}
@@ -610,7 +606,6 @@ export default function Home() {
               />
             </div>
 
-            {/* Send */}
             <button
               onClick={sendMessage}
               disabled={!input.trim() || loading || uploading || isListening}

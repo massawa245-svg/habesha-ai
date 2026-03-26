@@ -13,122 +13,215 @@ const deepseek = new OpenAI({
   baseURL: 'https://api.deepseek.com',
 });
 
-function extractRelevantWords(message: string): string[] {
-  const stopWords = ['der', 'die', 'das', 'und', 'oder', 'aber', 'nicht', 'ein', 'eine'];
-  return message
-    .toLowerCase()
-    .replace(/[.,!?;:()]/g, '')
-    .split(/\s+/)
-    .filter(w => w.length > 2 && !stopWords.includes(w));
-}
-
-function detectIntent(message: string): 'translation' | 'definition' | 'conversation' | 'love' | 'greeting' {
+// ============================================
+// 🔍 INTENT ERKENNUNG
+// ============================================
+function detectIntent(message: string): 'translation' | 'definition' | 'conversation' {
   const msg = message.toLowerCase();
-  if (msg.includes('liebe dich') || msg.includes('love you') || msg.includes('i love you')) return 'love';
-  if (msg.includes('wie sagt man') || msg.includes('bedeutet') || msg.includes('was heißt') || msg.includes('übersetze')) return 'translation';
-  if (msg.includes('erkläre') || msg.includes('was bedeutet') || msg.includes('hilf mir')) return 'definition';
-  if (msg.includes('hallo') || msg.includes('hi') || msg.includes('selam') || msg.includes('guten morgen')) return 'greeting';
+
+  if (msg.includes('wie sagt man') || msg.includes('übersetze') || msg.includes('was heißt')) {
+    return 'translation';
+  }
+
+  if (msg.includes('erkläre') || msg.includes('was bedeutet')) {
+    return 'definition';
+  }
+
   return 'conversation';
 }
 
+// ============================================
+// 🔎 SUPABASE SUCHE (VERBESSERT)
+// ============================================
+async function searchSupabase(message: string) {
+  const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
+  const words = clean.split(/\s+/).filter(w => w.length > 2);
+
+  let woerterbuch: any[] = [];
+  let saetze: any[] = [];
+
+  if (words.length > 0) {
+    const filters = words.map(w => `german.ilike.%${w}%`).join(',');
+
+    const { data: woerter } = await supabase
+      .from('dictionary')
+      .select('tigrinya_word, german')
+      .or(filters)
+      .limit(6);
+
+    woerterbuch = woerter || [];
+  }
+
+  const { data: training } = await supabase
+    .from('training_data')
+    .select('input_text, response_text')
+    .ilike('input_text', `%${message}%`)
+    .limit(3);
+
+  saetze = training || [];
+
+  return { woerterbuch, saetze };
+}
+
+// ============================================
+// 🧠 SICHERES AUTO-LEARNING
+// ============================================
+async function autoLearnSafe(question: string, answer: string) {
+  try {
+    // ❌ NICHT speichern wenn:
+    if (
+      !answer ||
+      answer.includes('ኣይፈልጥን') ||
+      answer.toLowerCase().includes('weiß ich nicht') ||
+      answer.length > 200
+    ) {
+      return;
+    }
+
+    // Prüfen ob schon existiert
+    const { data: existing } = await supabase
+      .from('training_data')
+      .select('id')
+      .eq('input_text', question)
+      .maybeSingle();
+
+    if (!existing) {
+      await supabase.from('training_data').insert({
+        input_text: question,
+        response_text: answer,
+        source: 'ai_safe',
+        created_at: new Date(),
+      });
+
+      console.log('✅ Sicher gelernt:', question);
+    }
+  } catch (e) {
+    console.log('Auto-Learn Fehler:', e);
+  }
+}
+
+// ============================================
+// 🤖 AI REQUEST (MIT FALLBACK)
+// ============================================
+async function askAI(messages: any[], temperature = 0.3): Promise<string> {
+  try {
+    const res = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      max_tokens: 200,
+      temperature,
+    });
+
+    const text = res.choices?.[0]?.message?.content ?? '';
+    if (text.trim()) return text;
+  } catch (e) {
+    console.log('Groq Fehler → DeepSeek');
+  }
+
+  try {
+    const res = await deepseek.chat.completions.create({
+      model: 'deepseek-chat',
+      messages,
+      max_tokens: 200,
+      temperature,
+    });
+
+    return res.choices?.[0]?.message?.content ?? '';
+  } catch (e) {
+    console.log('DeepSeek Fehler');
+  }
+
+  return '';
+}
+
+// ============================================
+// 🚀 MAIN ROUTE
+// ============================================
 export async function POST(req: Request) {
   try {
     const { message, history = [], userId } = await req.json();
 
+    // 💎 Premium Check
     if (userId) {
       const { isPremium, remaining } = await checkPremium(userId);
       if (!isPremium && remaining <= 0) {
         return NextResponse.json({
-          response: `💎 **Kostenloses Limit erreicht (5/Tag)**\n\n🚀 Upgrade auf Premium für unbegrenzte Chats!`
+          response: `💎 Limit erreicht. Upgrade für unbegrenzt.`,
         });
       }
     }
 
-    const searchWords = extractRelevantWords(message);
-    let woerterbuchContext = '';
-    let relevanteWoerter: any[] = [];
-
-    if (searchWords.length > 0) {
-      const filters = searchWords.map(w => `german.ilike.%${w}%,tigrinya_word.ilike.%${w}%`).join(',');
-      const { data } = await supabase.from('dictionary').select('tigrinya_word, german').or(filters).limit(6);
-      relevanteWoerter = data || [];
-      if (relevanteWoerter.length > 0) {
-        woerterbuchContext = `📚 **WÖRTERBUCH (MUSSST DU VERWENDEN):**\n${relevanteWoerter.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}\n⚠️ Wenn ein Wort im Wörterbuch steht, MUSST du es benutzen. KEINE eigenen Übersetzungen!`;
-      }
-    }
-
-    if (relevanteWoerter.length === 0) {
-      const { data: random } = await supabase.from('dictionary').select('tigrinya_word, german').limit(3);
-      if (random?.length) {
-        woerterbuchContext = `📚 **WÖRTER ZUM LERNEN:**\n${random.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}`;
-      }
-    }
-
-    const intent = detectIntent(message);
-    let intentInstruction = '';
-    switch (intent) {
-      case 'love':
-        intentInstruction = `⚠️ **LIEBES-PHRASE MODUS:** Erkläre kurz auf Deutsch, wie man "Ich liebe dich" auf Tigrinya sagt. Gib die Übersetzung: "ኣነ የፍቅረካ" (zu einem Mann) / "ኣነ የፍቅረኪ" (zu einer Frau). Maximal 2-3 Sätze. Freundlich und herzlich.`;
-        break;
-      case 'translation':
-        intentInstruction = `⚠️ **ÜBERSETZUNGS-MODUS:** Gib NUR die Übersetzung, KEINE Erklärung, MAXIMAL 1 Satz.`;
-        break;
-      case 'definition':
-        intentInstruction = `⚠️ **ERKLÄRUNGS-MODUS:** Erkläre kurz (1-2 Sätze), klar und hilfreich.`;
-        break;
-      case 'greeting':
-        intentInstruction = `⚠️ **BEGRÜSSUNGS-MODUS:** Antworte kurz und freundlich.`;
-        break;
-      default:
-        intentInstruction = `⚠️ **KONVERSATIONS-MODUS:** Antworte kurz (maximal 2 Sätze), freundlich.`;
-    }
-
-    const systemPrompt = `Du bist eine Tigrinya-KI-Assistentin.
-
-⚠️ **HARTE REGELN:**
-1. **SPRACHE:** Wenn Nutzer DEUTSCH fragt → antworte NUR auf DEUTSCH. Wenn TIGRINYA fragt → antworte NUR auf TIGRINYA. MISCHEN VERBOTEN!
-2. **WÖRTERBUCH:** ${woerterbuchContext}
-3. **ANTWORTEN:** Maximal 2-3 Sätze, kurz, klar, hilfreich.
-4. **WENN DU ETWAS NICHT WEISST:** Sage "ኣይፈልጥን" (Tigrinya) oder "Das weiß ich nicht" (Deutsch).
-
-${intentInstruction}
-
-BEISPIELE:
-- "Hallo" → "ሰላም"
-- "Wie geht es dir?" → "ከመይ ኣለኻ? (m) / ከመይ ኣለኺ? (f)"
-- "Ich liebe dich" → "ኣነ የፍቅረካ (m) / ኣነ የፍቅረኪ (f)"`;
-
-    const lastMessages = history.slice(-6);
-    const messages = [{ role: "system", content: systemPrompt }, ...lastMessages, { role: "user", content: message }];
-
     let responseText = '';
-    try {
-      const completion = await groq.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        messages,
-        max_tokens: 300,
-        temperature: 0.3,
-      });
-      responseText = completion.choices?.[0]?.message?.content || 'Entschuldigung, keine Antwort.';
-    } catch (groqError) {
-      const completion = await deepseek.chat.completions.create({
-        model: "deepseek-chat",
-        messages,
-        max_tokens: 300,
-        temperature: 0.3,
-      });
-      responseText = completion.choices?.[0]?.message?.content || 'Entschuldigung, technische Probleme.';
+    let usedSupabase = false;
+
+    const { woerterbuch, saetze } = await searchSupabase(message);
+
+    // ============================================
+    // 🧠 SYSTEM PROMPT (JETZT STRIKT!)
+    // ============================================
+    const intent = detectIntent(message);
+
+    const systemPrompt = `Du bist eine Tigrinya-KI.
+
+⚠️ REGELN:
+- KEINE Sprachmischung
+- Deutsch → Deutsch antworten
+- Tigrinya → Tigrinya antworten
+- Maximal 2 Sätze
+- Keine erfundenen Wörter
+
+Intent: ${intent}
+
+📚 Wörter:
+${woerterbuch.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}
+
+📖 Sätze:
+${saetze.map(s => `"${s.input_text}" → "${s.response_text}"`).join('\n')}
+`;
+
+    // ============================================
+    // 🤖 AI MIT KONTEXT
+    // ============================================
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history.slice(-6),
+      { role: 'user', content: message },
+    ];
+
+    responseText = await askAI(messages, 0.3);
+
+    if (woerterbuch.length > 0 || saetze.length > 0) {
+      usedSupabase = true;
     }
 
+    // ============================================
+    // ❗ FALLBACK
+    // ============================================
+    if (!responseText) {
+      responseText = 'ኣይፈልጥን — Das weiß ich noch nicht.';
+    }
+
+    // ============================================
+    // 🧠 SICHER LERNEN
+    // ============================================
+    await autoLearnSafe(message, responseText);
+
+    // Limit erhöhen
     if (userId) {
       const { isPremium } = await checkPremium(userId);
       if (!isPremium) await incrementUsage(userId, false);
     }
 
-    return NextResponse.json({ response: responseText });
+    return NextResponse.json({
+      response: responseText,
+      source: usedSupabase ? 'supabase+ai' : 'ai',
+    });
 
   } catch (error) {
     console.error('API Fehler:', error);
-    return NextResponse.json({ response: 'Entschuldigung, technische Probleme. Bitte später nochmal.' });
+
+    return NextResponse.json({
+      response: 'Fehler, bitte später versuchen.',
+    });
   }
 }
