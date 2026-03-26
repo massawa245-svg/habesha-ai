@@ -30,7 +30,6 @@ export default function AdminDashboard() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Prüfe ob eingeloggter User Admin ist
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -40,7 +39,6 @@ export default function AdminDashboard() {
         return;
       }
       
-      // Prüfe ob User in trusted_users mit role 'admin'
       const { data: trusted } = await supabase
         .from('trusted_users')
         .select('*')
@@ -56,7 +54,6 @@ export default function AdminDashboard() {
       setIsAuthorized(true);
       setLoading(false);
       
-      // Daten laden
       loadTempFeedback();
       loadTrustedUsers();
     };
@@ -118,7 +115,6 @@ export default function AdminDashboard() {
         </button>
       </div>
       
-      {/* Beta-Tester verwalten */}
       <div className="bg-gray-800 p-4 sm:p-6 rounded-xl mb-8">
         <h2 className="text-xl font-bold mb-4">👥 Beta-Tester verwalten</h2>
         
@@ -153,7 +149,6 @@ export default function AdminDashboard() {
         </div>
       </div>
       
-      {/* Ungeprüftes Feedback */}
       <div className="bg-gray-800 p-4 sm:p-6 rounded-xl">
         <h2 className="text-xl font-bold mb-4">📝 Ungeprüftes Feedback ({feedbacks.length})</h2>
         
