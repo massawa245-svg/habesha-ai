@@ -1,129 +1,238 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { ImageAnnotatorClient } from '@google-cloud/vision';
 import OpenAI from 'openai';
 import { checkPremium, incrementUsage } from '@/lib/premium';
 
+// ============================================
+// API CLIENTS
+// ============================================
 const groq = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
   baseURL: 'https://api.groq.com/openai/v1',
 });
 
-// Simulierter OCR (für Test – später durch echten Google Vision ersetzen)
+const deepseek = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: 'https://api.deepseek.com',
+});
+
+const visionClient = new ImageAnnotatorClient({
+  apiKey: process.env.GOOGLE_VISION_API_KEY,
+});
+
+// ============================================
+// 🌍 USER SPRACHE ERKENNEN (WICHTIG!)
+// ============================================
+function detectUserLanguage(text: string): 'de' | 'ti' | 'en' {
+  if (!text) return 'de';
+
+  if (/[\u1200-\u137F]/.test(text)) return 'ti';
+
+  if (text.match(/\b(the|and|what|how|why|please|hello|thanks)\b/i)) {
+    return 'en';
+  }
+
+  return 'de';
+}
+
+// ============================================
+// 🧹 OCR CLEAN
+// ============================================
+function cleanOCR(text: string): string {
+  return text
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[^\x00-\x7F\u1200-\u137F\s.,!?;:()/-]/g, '')
+    .trim()
+    .slice(0, 3500);
+}
+
+// ============================================
+// 📸 OCR
+// ============================================
 async function extractTextFromImage(base64Image: string): Promise<string> {
   let imageData = base64Image;
   if (base64Image.startsWith('data:image')) {
     imageData = base64Image.split(',')[1];
   }
-  
-  return `AOK Baden-Württemberg
-Ihr monatlicher Beitrag ändert sich ab 01.04.2026.
-Neuer Beitrag: 214,50 € monatlich.
-Bitte überweisen Sie den neuen Betrag bis zum 15.04.2026.
-Bei verspäteter Zahlung können Mahngebühren anfallen.
-Telefon: 0800 123456`;
+
+  try {
+    const [result] = await visionClient.textDetection({
+      image: { content: imageData }
+    });
+
+    const detections = result.textAnnotations;
+
+    if (detections && detections.length > 0) {
+      return cleanOCR(detections[0].description || '');
+    }
+
+    return '';
+  } catch (error) {
+    console.error('OCR Fehler:', error);
+    return '';
+  }
 }
 
-export async function POST(request: Request) {
+// ============================================
+// 🤖 KI MIT FALLBACK + SAFE RESPONSE
+// ============================================
+async function askAI(messages: any[]): Promise<string> {
   try {
-    const { image, userId } = await request.json();
-    
-    if (!image) {
-      return NextResponse.json({ 
-        response: 'Kein Bild gefunden. Bitte lade ein Bild hoch.' 
-      });
-    }
-    
-    // 🔥 FREE LIMIT CHECK
-    if (userId) {
-      const { isPremium, remaining } = await checkPremium(userId);
-      
-      if (!isPremium && remaining <= 0) {
-        return NextResponse.json({ 
-          response: `📸 Du hast dein kostenloses Limit von 5 Anfragen pro Tag erreicht.
-
-💎 Mit Premium (9,99€/Monat) kannst du unbegrenzt Briefe analysieren lassen.
-
-👉 Klick auf den "💎 Premium" Button oben rechts in der App!` 
-        });
-      }
-    }
-    
-    // 1. OCR: Text aus Bild lesen
-    console.log('📸 OCR starten...');
-    const ocrText = await extractTextFromImage(image);
-    console.log('📝 OCR Text:', ocrText.substring(0, 200));
-    
-    if (!ocrText || ocrText.trim().length < 10) {
-      return NextResponse.json({ 
-        response: '❌ Konnte keinen Text auf dem Bild erkennen. Bitte mach ein klareres Foto.'
-      });
-    }
-    
-    // 2. Prompt für KI
-    const userPrompt = `Du bist ein Experte für Behördenbriefe in Deutschland.
-Ein Eritreer hat diesen deutschen Brief erhalten und versteht ihn nicht.
-
-Erkläre den Brief auf TIGRINYA so, dass er GENAU versteht, was zu tun ist.
-
-WICHTIGE REGELN:
-- NICHT Wort-für-Wort übersetzen
-- KLAR sagen: WAS muss die Person TUN?
-- FRISTEN hervorheben (bis wann?)
-- KONSEQUENZEN erklären (was passiert wenn nicht?)
-- Einfache, kurze Sätze
-
-STRUKTUR:
-📌 Worum geht es? (Ein Satz)
-⚡ Was musst du tun? (Schritt für Schritt)
-⏰ Bis wann?
-⚠️ Was passiert wenn nicht?
-📞 Hilfe bekommen (wenn nötig)
-
-Brief-Text:
-${ocrText}`;
-
-    // 3. KI antworten lassen
-    const completion = await groq.chat.completions.create({
+    const res = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
-      messages: [
-        { 
-          role: "system", 
-          content: "Du erklärst Behördenbriefe einfach auf Tigrinya. Sei freundlich, klar und hilfreich." 
-        },
-        { role: "user", content: userPrompt }
-      ],
+      messages,
       max_tokens: 800,
       temperature: 0.3,
     });
 
-    const explanation = completion.choices[0].message.content;
-    
-    // 4. Speichern in Supabase
+    const text = res.choices?.[0]?.message?.content?.trim();
+    if (text) return text;
+
+    throw new Error('Empty response');
+  } catch (e) {
+    console.log('Groq fail → DeepSeek');
+
+    try {
+      const res = await deepseek.chat.completions.create({
+        model: "deepseek-chat",
+        messages,
+        max_tokens: 800,
+        temperature: 0.3,
+      });
+
+      const text = res.choices?.[0]?.message?.content?.trim();
+      if (text) return text;
+
+      throw new Error('Empty fallback');
+    } catch (err) {
+      console.error('Beide KI fail:', err);
+      return '';
+    }
+  }
+}
+
+// ============================================
+// 🤖 DOCUMENT EXPLAINER (10/10 PROMPT)
+// ============================================
+async function explainDocument(ocrText: string, userLang: 'de' | 'ti' | 'en') {
+
+  const langMap = {
+    de: 'DEUTSCH',
+    ti: 'TIGRINYA',
+    en: 'ENGLISH'
+  };
+
+  const prompt = `
+Du bist ein Experte für deutsche Behördenbriefe.
+
+⚠️ WICHTIGE REGEL:
+- Antworte NUR in dieser Sprache: ${langMap[userLang]}
+- MISCHEN VERBOTEN
+
+AUFGABE:
+Erkläre den Brief so einfach wie möglich.
+
+REGELN:
+- NICHT Wort für Wort übersetzen
+- KLAR sagen: WAS muss die Person tun
+- FRISTEN deutlich nennen
+- KONSEQUENZEN erklären
+
+STRUKTUR:
+📌 Worum geht es?
+⚡ Was musst du tun?
+⏰ Bis wann?
+⚠️ Was passiert wenn nicht?
+📞 Hilfe (falls vorhanden)
+
+TEXT:
+${ocrText}
+`;
+
+  return await askAI([
+    { role: "system", content: "Du erklärst klar, einfach und ohne Fehler." },
+    { role: "user", content: prompt }
+  ]);
+}
+
+// ============================================
+// 🚀 MAIN
+// ============================================
+export async function POST(req: Request) {
+  try {
+    const { image, message = '', userId } = await req.json();
+
+    if (!image) {
+      return NextResponse.json({
+        response: '📸 Bitte Bild hochladen.'
+      });
+    }
+
+    // 🔒 SIZE LIMIT
+    if (image.length > 5_500_000) {
+      return NextResponse.json({
+        response: '📸 Bild zu groß (max 5MB).'
+      });
+    }
+
+    // 💎 PREMIUM
+    let premium = null;
+    if (userId) {
+      premium = await checkPremium(userId);
+      if (!premium.isPremium && premium.remaining <= 0) {
+        return NextResponse.json({
+          response: '💎 Limit erreicht. Upgrade nötig.'
+        });
+      }
+    }
+
+    // 📸 OCR
+    const ocrText = await extractTextFromImage(image);
+
+    if (!ocrText || ocrText.length < 30) {
+      return NextResponse.json({
+        response: '❌ Kein klarer Text erkannt. Bitte besseres Foto.'
+      });
+    }
+
+    // 🌍 USER LANGUAGE (NICHT OCR!)
+    const userLang = detectUserLanguage(message);
+
+    // 🤖 EXPLAIN
+    const explanation = await explainDocument(ocrText, userLang);
+
+    if (!explanation) {
+      return NextResponse.json({
+        response: '❌ KI Fehler. Bitte nochmal versuchen.'
+      });
+    }
+
+    // 💾 SAVE
     if (userId) {
       try {
         await supabase.from('document_analyses').insert({
           user_id: userId,
           ocr_text: ocrText,
           analysis: explanation,
+          language: userLang,
           created_at: new Date()
         });
-        
-        // 🔥 Limit erhöhen (nur wenn nicht Premium)
-        const { isPremium } = await checkPremium(userId);
-        if (!isPremium) {
-          await incrementUsage(userId, false);
-        }
-      } catch (e) {
-        console.log('Speichern fehlgeschlagen:', e);
-      }
+      } catch {}
     }
-    
+
+    // 📊 LIMIT COUNT
+    if (userId && premium && !premium.isPremium) {
+      await incrementUsage(userId, false);
+    }
+
     return NextResponse.json({ response: explanation });
-    
-  } catch (error: any) {
-    console.error('❌ Bildanalyse Fehler:', error);
-    return NextResponse.json({ 
-      response: 'Fehler bei der Bildanalyse. Bitte versuch es später nochmal.' 
+
+  } catch (error) {
+    console.error('API Fehler:', error);
+
+    return NextResponse.json({
+      response: '❌ Fehler. Bitte später erneut versuchen.'
     });
   }
 }
