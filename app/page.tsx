@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client'; // ← RICHTIGER IMPORT
+import { createClient } from '@/lib/supabase/client';
 
 // ============================================
 // TYPEN
@@ -65,8 +65,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
-  // 🔥 HIER: Supabase Client erstellen
-  const supabase = createClient(); // ← DAS HAT GEFEHLT!
+  const supabase = createClient();
 
   // ============================================
   // CHAT-VERLAUF FUNKTIONEN
@@ -117,22 +116,49 @@ export default function Home() {
   };
 
   // ============================================
-  // USER & AUTH
+  // 🔥 AUTH MIT OAuth-CODE VERARBEITUNG
   // ============================================
   useEffect(() => {
     setMounted(true);
-    const checkUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setUser(user);
-        setUserEmail(user.email || '');
+    
+    const initAuth = async () => {
+      // 1. OAuth-Code aus URL verarbeiten (wichtig für Google Login!)
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      
+      if (code) {
+        console.log('🔑 OAuth-Code gefunden, tausche gegen Session...');
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          console.error('❌ OAuth Fehler:', error);
+          window.location.href = '/login';
+          return;
+        }
+        // Code aus URL entfernen
+        window.history.replaceState({}, '', '/');
+      }
+      
+      // 2. Session prüfen
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setUser(session.user);
+        setUserEmail(session.user.email || '');
         await loadConversations();
         await startNewChat();
       } else {
-        window.location.href = '/login';
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          setUser(user);
+          setUserEmail(user.email || '');
+          await loadConversations();
+          await startNewChat();
+        } else {
+          window.location.href = '/login';
+        }
       }
     };
-    checkUser();
+    
+    initAuth();
   }, []);
 
   const handleLogout = async () => {

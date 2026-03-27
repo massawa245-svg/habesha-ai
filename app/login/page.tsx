@@ -92,37 +92,38 @@ export default function LoginPage() {
     setLoading(false);
   };
 
-  // ============================================
+ // ============================================
   // 🔥 GOOGLE LOGIN (KORRIGIERT)
   // ============================================
-  const handleGoogleLogin = async () => {
-    setLoading(true);
-    setError('');
-    
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin, // Direkt zur Startseite, nicht zu /auth/callback!
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          }
+  
+const handleGoogleLogin = async () => {
+  setLoading(true);
+  setError('');
+  
+  try {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`, // ← HIER ÄNDERN!
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
         }
-      });
-      
-      if (error) {
-        console.error('Google Login Fehler:', error);
-        setError(error.message);
-        setLoading(false);
       }
-      // Bei Erfolg wird die Seite weitergeleitet – kein setLoading(false)!
-    } catch (err) {
-      console.error('Unerwarteter Fehler:', err);
-      setError('Ein unerwarteter Fehler ist aufgetreten');
+    });
+    
+    if (error) {
+      console.error('Google Login Fehler:', error);
+      setError(error.message);
       setLoading(false);
     }
-  };
+    // Bei Erfolg wird die Seite weitergeleitet – kein setLoading(false)!
+  } catch (err) {
+    console.error('Unerwarteter Fehler:', err);
+    setError('Ein unerwarteter Fehler ist aufgetreten');
+    setLoading(false);
+  }
+};
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900 p-4">
