@@ -7,12 +7,10 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   
-  // Login/Registrierung Basis
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   
-  // Optionale Felder (nur bei Registrierung)
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [birthDate, setBirthDate] = useState('');
@@ -95,16 +93,33 @@ export default function LoginPage() {
   };
 
   // ============================================
-  // GOOGLE LOGIN
+  // 🔥 GOOGLE LOGIN (KORRIGIERT)
   // ============================================
   const handleGoogleLogin = async () => {
     setLoading(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: `${window.location.origin}/auth/callback` }
-    });
-    if (error) {
-      setError(error.message);
+    setError('');
+    
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin, // Direkt zur Startseite, nicht zu /auth/callback!
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          }
+        }
+      });
+      
+      if (error) {
+        console.error('Google Login Fehler:', error);
+        setError(error.message);
+        setLoading(false);
+      }
+      // Bei Erfolg wird die Seite weitergeleitet – kein setLoading(false)!
+    } catch (err) {
+      console.error('Unerwarteter Fehler:', err);
+      setError('Ein unerwarteter Fehler ist aufgetreten');
       setLoading(false);
     }
   };
@@ -139,7 +154,6 @@ export default function LoginPage() {
         
         {/* Login/Registrierung Form */}
         <form onSubmit={isLogin ? handleLogin : handleRegister} className="space-y-4">
-          {/* Email */}
           <input
             type="email"
             placeholder="Email"
@@ -149,7 +163,6 @@ export default function LoginPage() {
             required
           />
           
-          {/* Passwort */}
           <input
             type="password"
             placeholder="Password"
@@ -159,7 +172,6 @@ export default function LoginPage() {
             required
           />
           
-          {/* Passwort bestätigen (nur bei Registrierung) */}
           {!isLogin && (
             <input
               type="password"
@@ -171,9 +183,6 @@ export default function LoginPage() {
             />
           )}
           
-          {/* ============================================ */}
-          {/* OPTIONALE FELDER (nur bei Registrierung) */}
-          {/* ============================================ */}
           {!isLogin && (
             <>
               <div className="grid grid-cols-2 gap-3">
@@ -182,14 +191,14 @@ export default function LoginPage() {
                   placeholder="Vorname (optional)"
                   value={firstName}
                   onChange={(e) => setFirstName(e.target.value)}
-                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white"
                 />
                 <input
                   type="text"
                   placeholder="Nachname (optional)"
                   value={lastName}
                   onChange={(e) => setLastName(e.target.value)}
-                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white"
                 />
               </div>
               
@@ -199,20 +208,19 @@ export default function LoginPage() {
                   placeholder="Geburtsdatum"
                   value={birthDate}
                   onChange={(e) => setBirthDate(e.target.value)}
-                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white"
                 />
                 <input
                   type="tel"
                   placeholder="Telefon (optional)"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white"
                 />
               </div>
             </>
           )}
           
-          {/* Submit Button */}
           <button
             type="submit"
             disabled={loading}
@@ -222,7 +230,6 @@ export default function LoginPage() {
           </button>
         </form>
         
-        {/* Umschalter Login/Registrierung */}
         <button
           onClick={() => {
             setIsLogin(!isLogin);
@@ -233,7 +240,6 @@ export default function LoginPage() {
           {isLogin ? 'Email für Registrierung' : 'Bereits registriert? Anmelden'}
         </button>
         
-        {/* Hinweis zu optionalen Feldern (nur bei Registrierung) */}
         {!isLogin && (
           <p className="text-center text-gray-500 text-xs mt-4">
             * Pflichtfelder | Vorname, Nachname, Geburtsdatum, Telefon sind optional
