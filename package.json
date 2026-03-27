@@ -12,6 +12,7 @@
     "@google-cloud/vision": "^5.3.5",
     "@stripe/stripe-js": "^8.11.0",
     "@supabase/postgrest-js": "^2.100.0",
+    "@supabase/ssr": "^0.9.0",
     "@supabase/supabase-js": "^2.100.0",
     "axios": "^1.13.6",
     "cheerio": "^1.2.0",

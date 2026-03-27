@@ -1,57 +1,112 @@
 'use client';
-import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useState } from 'react';
+import { createClient } from '@/lib/supabase/client';
 
 export default function LoginPage() {
+  const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  
+  // Login/Registrierung Basis
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  
+  // Optionale Felder (nur bei Registrierung)
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [birthDate, setBirthDate] = useState('');
+  const [phone, setPhone] = useState('');
+  
+  const supabase = createClient();
 
+  // ============================================
+  // LOGIN
+  // ============================================
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    
+    if (error) {
+      setError(error.message);
+    } else {
+      window.location.href = '/';
+    }
+    setLoading(false);
+  };
+
+  // ============================================
+  // REGISTRIERUNG
+  // ============================================
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    
+    if (password !== confirmPassword) {
+      setError('Passwörter stimmen nicht überein');
+      setLoading(false);
+      return;
+    }
+    
+    if (password.length < 6) {
+      setError('Passwort muss mindestens 6 Zeichen lang sein');
+      setLoading(false);
+      return;
+    }
+    
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          first_name: firstName,
+          last_name: lastName,
+          birth_date: birthDate,
+          phone: phone,
+        }
+      }
+    });
+    
+    if (authError) {
+      setError(authError.message);
+      setLoading(false);
+      return;
+    }
+    
+    if (authData.user) {
+      await supabase.from('users').upsert({
+        id: authData.user.id,
+        email: email,
+        first_name: firstName,
+        last_name: lastName,
+        birth_date: birthDate,
+        phone: phone,
+        created_at: new Date()
+      });
+    }
+    
+    alert('✅ Registrierung erfolgreich! Bitte bestätige deine Email.');
+    setIsLogin(true);
+    setLoading(false);
+  };
+
+  // ============================================
+  // GOOGLE LOGIN
+  // ============================================
   const handleGoogleLogin = async () => {
     setLoading(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`
-      }
+      options: { redirectTo: `${window.location.origin}/auth/callback` }
     });
     if (error) {
       setError(error.message);
       setLoading(false);
     }
-  };
-
-  const handleEmailLogin = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    
-    const formData = new FormData(e.currentTarget);
-    const email = formData.get('email') as string;
-    const password = formData.get('password') as string;
-    
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    
-    if (error) setError(error.message);
-    else window.location.href = '/';
-    
-    setLoading(false);
-  };
-
-  const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    
-    const formData = new FormData(e.currentTarget);
-    const email = formData.get('email') as string;
-    const password = formData.get('password') as string;
-    
-    const { error } = await supabase.auth.signUp({ email, password });
-    
-    if (error) setError(error.message);
-    else alert('✅ Registrierung erfolgreich! Bitte bestätige deine Email.');
-    
-    setLoading(false);
   };
 
   return (
@@ -65,11 +120,11 @@ export default function LoginPage() {
           </div>
         )}
         
-        {/* Google Login Button */}
+        {/* Google Login */}
         <button
           onClick={handleGoogleLogin}
           disabled={loading}
-          className="w-full bg-white text-gray-800 py-3 rounded-lg font-semibold hover:bg-gray-100 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 mb-6"
+          className="w-full bg-white text-gray-800 py-3 rounded-lg font-semibold hover:bg-gray-100 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 mb-4"
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24">
             <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -80,64 +135,110 @@ export default function LoginPage() {
           Mit Google anmelden
         </button>
         
-        <div className="relative my-6">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-gray-600"></div>
-          </div>
-          <div className="relative flex justify-center text-sm">
-            <span className="px-2 bg-gray-800 text-gray-400">oder mit Email</span>
-          </div>
-        </div>
+        <div className="text-center text-gray-500 text-sm mb-4">oder mit Email</div>
         
-        {/* Email/Passwort Login */}
-        <form onSubmit={handleEmailLogin} className="space-y-4 mb-4">
+        {/* Login/Registrierung Form */}
+        <form onSubmit={isLogin ? handleLogin : handleRegister} className="space-y-4">
+          {/* Email */}
           <input
             type="email"
-            name="email"
             placeholder="Email"
-            className="w-full p-3 bg-gray-700 rounded-lg text-white"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
             required
           />
+          
+          {/* Passwort */}
           <input
             type="password"
-            name="password"
-            placeholder="Passwort"
-            className="w-full p-3 bg-gray-700 rounded-lg text-white"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
             required
           />
+          
+          {/* Passwort bestätigen (nur bei Registrierung) */}
+          {!isLogin && (
+            <input
+              type="password"
+              placeholder="Password bestätigen"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              required
+            />
+          )}
+          
+          {/* ============================================ */}
+          {/* OPTIONALE FELDER (nur bei Registrierung) */}
+          {/* ============================================ */}
+          {!isLogin && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  placeholder="Vorname (optional)"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <input
+                  type="text"
+                  placeholder="Nachname (optional)"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  type="date"
+                  placeholder="Geburtsdatum"
+                  value={birthDate}
+                  onChange={(e) => setBirthDate(e.target.value)}
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <input
+                  type="tel"
+                  placeholder="Telefon (optional)"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="w-full p-3 bg-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </>
+          )}
+          
+          {/* Submit Button */}
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-emerald-600 py-3 rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-50"
+            className="w-full bg-emerald-600 py-3 rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-50 transition-colors"
           >
-            Anmelden
+            {loading ? 'Laden...' : isLogin ? 'Anmelden' : 'Registrieren'}
           </button>
         </form>
         
-        {/* Registrierung */}
-        <form onSubmit={handleSignUp} className="space-y-4">
-          <input
-            type="email"
-            name="email"
-            placeholder="Email für Registrierung"
-            className="w-full p-3 bg-gray-700 rounded-lg text-white"
-            required
-          />
-          <input
-            type="password"
-            name="password"
-            placeholder="Passwort"
-            className="w-full p-3 bg-gray-700 rounded-lg text-white"
-            required
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-gray-600 py-3 rounded-lg font-semibold hover:bg-gray-500 disabled:opacity-50"
-          >
-            Neues Konto erstellen
-          </button>
-        </form>
+        {/* Umschalter Login/Registrierung */}
+        <button
+          onClick={() => {
+            setIsLogin(!isLogin);
+            setError('');
+          }}
+          className="w-full text-center text-gray-400 text-sm mt-4 hover:text-white transition-colors"
+        >
+          {isLogin ? 'Email für Registrierung' : 'Bereits registriert? Anmelden'}
+        </button>
+        
+        {/* Hinweis zu optionalen Feldern (nur bei Registrierung) */}
+        {!isLogin && (
+          <p className="text-center text-gray-500 text-xs mt-4">
+            * Pflichtfelder | Vorname, Nachname, Geburtsdatum, Telefon sind optional
+          </p>
+        )}
       </div>
     </div>
   );
