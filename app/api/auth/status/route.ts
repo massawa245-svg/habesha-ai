@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 
 export async function GET() {
   try {
-    // Wichtig: Session aus dem Cookie lesen
+    const supabase = await createClient();
     const { data: { user }, error } = await supabase.auth.getUser();
     
     if (error) {

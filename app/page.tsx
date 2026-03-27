@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/client'; // ← RICHTIGER IMPORT
 
 // ============================================
 // TYPEN
@@ -64,6 +64,9 @@ export default function Home() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  
+  // 🔥 HIER: Supabase Client erstellen
+  const supabase = createClient(); // ← DAS HAT GEFEHLT!
 
   // ============================================
   // CHAT-VERLAUF FUNKTIONEN
