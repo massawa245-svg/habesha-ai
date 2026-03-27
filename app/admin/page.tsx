@@ -1,7 +1,7 @@
 // app/admin/page.tsx
 'use client';
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/client';
 
 type Feedback = {
   id: string;
@@ -29,6 +29,9 @@ export default function AdminDashboard() {
   const [newEmail, setNewEmail] = useState('');
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // 🔥 Supabase Client erstellen
+  const supabase = createClient();
 
   useEffect(() => {
     const checkAuth = async () => {

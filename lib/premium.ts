@@ -1,5 +1,6 @@
 // lib/premium.ts
-import { supabase } from './supabase';
+
+import { createClient } from '@/lib/supabase/server';
 
 export async function checkPremium(userId: string): Promise<{ isPremium: boolean, remaining: number, limit: number }> {
   const FREE_LIMIT = 5;
@@ -8,12 +9,15 @@ export async function checkPremium(userId: string): Promise<{ isPremium: boolean
     return { isPremium: false, remaining: FREE_LIMIT, limit: FREE_LIMIT };
   }
   
+  // 🔥 HIER: Supabase Client erstellen
+  const supabase = await createClient();
+  
   // Hole oder erstelle User Limit
   let { data: limit } = await supabase
     .from('user_limits')
     .select('*')
     .eq('user_id', userId)
-    .maybeSingle();  // ← maybeSingle() statt single() (gibt null statt Fehler)
+    .maybeSingle();
   
   // Wenn kein Eintrag, erstelle neuen
   if (!limit) {
@@ -50,6 +54,9 @@ export async function checkPremium(userId: string): Promise<{ isPremium: boolean
 
 export async function incrementUsage(userId: string, isPremium: boolean): Promise<void> {
   if (isPremium || !userId) return;
+  
+  // 🔥 HIER: Supabase Client erstellen
+  const supabase = await createClient();
   
   try {
     // Hole aktuellen Stand
