@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 import { checkPremium, incrementUsage } from '@/lib/premium';
 
 const groq = new OpenAI({
@@ -31,9 +31,9 @@ function detectIntent(message: string): 'translation' | 'definition' | 'conversa
 }
 
 // ============================================
-// 🔎 SUPABASE SUCHE (VERBESSERT)
+// 🔎 SUPABASE SUCHE (VERBESSERT) - JETZT MIT supabaseClient PARAMETER
 // ============================================
-async function searchSupabase(message: string) {
+async function searchSupabase(supabase: any, message: string) {
   const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
   const words = clean.split(/\s+/).filter(w => w.length > 2);
 
@@ -64,9 +64,9 @@ async function searchSupabase(message: string) {
 }
 
 // ============================================
-// 🧠 SICHERES AUTO-LEARNING
+// 🧠 SICHERES AUTO-LEARNING - JETZT MIT supabaseClient PARAMETER
 // ============================================
-async function autoLearnSafe(question: string, answer: string) {
+async function autoLearnSafe(supabase: any, question: string, answer: string) {
   try {
     // ❌ NICHT speichern wenn:
     if (
@@ -139,7 +139,10 @@ async function askAI(messages: any[], temperature = 0.3): Promise<string> {
 // ============================================
 export async function POST(req: Request) {
   try {
-    const { message, history = [], userId } = await req.json();
+    const { message, history = [], userId, conversationId, isNewConversation } = await req.json();
+
+    // 🔥 SUPABASE CLIENT ERSTELLEN
+    const supabase = await createClient();
 
     // 💎 Premium Check
     if (userId) {
@@ -154,7 +157,8 @@ export async function POST(req: Request) {
     let responseText = '';
     let usedSupabase = false;
 
-    const { woerterbuch, saetze } = await searchSupabase(message);
+    // 🔥 SUPABASE SUCHE MIT CLIENT
+    const { woerterbuch, saetze } = await searchSupabase(supabase, message);
 
     // ============================================
     // 🧠 SYSTEM PROMPT (JETZT STRIKT!)
@@ -202,9 +206,9 @@ ${saetze.map(s => `"${s.input_text}" → "${s.response_text}"`).join('\n')}
     }
 
     // ============================================
-    // 🧠 SICHER LERNEN
+    // 🧠 SICHER LERNEN (MIT supabase CLIENT)
     // ============================================
-    await autoLearnSafe(message, responseText);
+    await autoLearnSafe(supabase, message, responseText);
 
     // Limit erhöhen
     if (userId) {

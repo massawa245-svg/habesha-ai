@@ -1,24 +1,15 @@
-import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+// app/auth/callback/route.ts
+import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
 
 export async function GET(request: Request) {
-  const requestUrl = new URL(request.url);
-  const code = requestUrl.searchParams.get('code');
-  
-  console.log('🔵 AUTH CALLBACK ROUTE:', { code: !!code });
-  
+  const requestUrl = new URL(request.url)
+  const code = requestUrl.searchParams.get('code')
+
   if (code) {
-    const supabase = await createClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-    
-    if (error) {
-      console.error('🔴 ERROR:', error);
-      return NextResponse.redirect(new URL('/login?error=auth_failed', requestUrl.origin));
-    }
-    
-    console.log('🔵 SUCCESS: Session ausgetauscht');
+    const supabase = await createClient()
+    await supabase.auth.exchangeCodeForSession(code)
   }
-  
-  console.log('🔵 REDIRECT to /');
-  return NextResponse.redirect(new URL('/', requestUrl.origin));
+
+  return NextResponse.redirect(new URL('/', requestUrl.origin))
 }

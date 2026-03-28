@@ -1,5 +1,5 @@
 // lib/supabase/client.ts
-import { createBrowserClient } from '@supabase/ssr';
+import { createBrowserClient } from '@supabase/ssr'
 
 export const createClient = () => {
   return createBrowserClient(
@@ -9,31 +9,8 @@ export const createClient = () => {
       auth: {
         flowType: 'pkce',
         persistSession: true,
-        detectSessionInUrl: true,
-        storage: {
-          getItem: (key) => {
-            try {
-              return localStorage.getItem(key);
-            } catch {
-              return null;
-            }
-          },
-          setItem: (key, value) => {
-            try {
-              localStorage.setItem(key, value);
-            } catch {
-              // Ignore
-            }
-          },
-          removeItem: (key) => {
-            try {
-              localStorage.removeItem(key);
-            } catch {
-              // Ignore
-            }
-          },
-        },
+        detectSessionInUrl: false,
       },
     }
-  );
-};
+  )
+}
