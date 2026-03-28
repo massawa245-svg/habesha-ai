@@ -1,36 +1,45 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 
 export async function GET() {
+  const supabase = await createClient();
+  
+  // Test Supabase Connection
+  const { data: testData, error: supabaseError } = await supabase
+    .from('trusted_users')
+    .select('count')
+    .limit(1);
+  
+  // Test Groq (optional)
+  let groqStatus = 'not tested';
   try {
-    // Versuche Google Login zu simulieren (ohne Weiterleitung)
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: 'http://localhost:3000/auth/callback' }
+    const groqResponse = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
     });
-    
-    if (error) {
-      return NextResponse.json({
-        status: 'error',
-        message: error.message,
-        code: error.status,
-        google_enabled: false,
-        suggestion: 'Google Provider ist in Supabase NICHT aktiviert'
-      });
-    }
-    
-    return NextResponse.json({
-      status: 'success',
-      google_enabled: true,
-      message: 'Google Provider ist aktiviert!',
-      url: data?.url
-    });
-    
-  } catch (error: any) {
-    return NextResponse.json({
-      status: 'error',
-      message: error.message,
-      google_enabled: false
-    });
+    groqStatus = groqResponse.ok ? 'connected' : 'error';
+  } catch {
+    groqStatus = 'error';
   }
+  
+  // Test DeepSeek (optional)
+  let deepseekStatus = 'not tested';
+  try {
+    const deepseekResponse = await fetch('https://api.deepseek.com/models', {
+      headers: {
+        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+      },
+    });
+    deepseekStatus = deepseekResponse.ok ? 'connected' : 'error';
+  } catch {
+    deepseekStatus = 'error';
+  }
+  
+  return NextResponse.json({
+    supabase: supabaseError ? 'error' : 'connected',
+    groq: groqStatus,
+    deepseek: deepseekStatus,
+    timestamp: new Date().toISOString(),
+  });
 }
