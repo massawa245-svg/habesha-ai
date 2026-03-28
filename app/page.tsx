@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
 // ============================================
@@ -50,6 +50,9 @@ interface SpeechRecognitionEvent extends Event {
 // KOMPONENTE
 // ============================================
 export default function Home() {
+  // ============================================
+  // STATES
+  // ============================================
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
@@ -64,30 +67,35 @@ export default function Home() {
   const [authChecked, setAuthChecked] = useState<boolean>(false);
 
   // ============================================
-  // 🔥 PREMIUM LIMITS
+  // PREMIUM LIMITS
   // ============================================
   const [pdfCount, setPdfCount] = useState<number>(0);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(30 * 60);
   const [limitReached, setLimitReached] = useState<boolean>(false);
   const [isPremium, setIsPremium] = useState<boolean>(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const initCalled = useRef<boolean>(false); // 🔥 Verhindert doppelte Init in Strict Mode
-
+  
   const MAX_PDF = 8;
-
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const initCalled = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
   const supabase = createClient();
 
   // ============================================
+  // SYSTEM NACHRICHT
+  // ============================================
+  const addSystemMessage = useCallback((content: string) => {
+    setMessages(prev => [...prev, { role: 'assistant', content }]);
+  }, []);
+
+  // ============================================
   // TIMER FÜR 30 MINUTEN CHAT-LIMIT
   // ============================================
-  const startChatTimer = () => {
+  const startChatTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      if (isPremium) return;
-      if (limitReached) return;
+      if (isPremium || limitReached) return;
       
       setRemainingSeconds(prev => {
         if (prev <= 1) {
@@ -102,26 +110,21 @@ export default function Home() {
         return prev - 1;
       });
     }, 1000);
-  };
-
-  const addSystemMessage = (content: string) => {
-    setMessages(prev => [...prev, { role: 'assistant', content }]);
-  };
+  }, [isPremium, limitReached, addSystemMessage]);
 
   // ============================================
-  // CHAT-VERLAUF FUNKTIONEN
+  // CHAT-VERLAUF FUNKTIONEN (mit userId Parameter)
   // ============================================
-  const loadConversations = async () => {
-    if (!user) return;
+  const loadConversations = useCallback(async (userId: string) => {
     const { data } = await supabase
       .from('conversations')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('updated_at', { ascending: false });
     setConversations(data || []);
-  };
+  }, [supabase]);
 
-  const loadMessages = async (conversationId: string) => {
+  const loadMessages = useCallback(async (conversationId: string) => {
     const { data } = await supabase
       .from('messages')
       .select('*')
@@ -130,40 +133,51 @@ export default function Home() {
     setMessages(data || []);
     setCurrentConversationId(conversationId);
     setSidebarOpen(false);
-  };
+  }, [supabase]);
 
-  const startNewChat = async () => {
-    if (!user) return;
+  const startNewChat = useCallback(async (userId: string) => {
     const { data } = await supabase
       .from('conversations')
-      .insert({ user_id: user.id, title: 'Neues Gespräch' })
+      .insert({ user_id: userId, title: 'Neues Gespräch' })
       .select()
       .single();
     if (data) {
       setCurrentConversationId(data.id);
       setMessages([]);
-      loadConversations();
+      loadConversations(userId);
       setSidebarOpen(false);
     }
-  };
+  }, [supabase, loadConversations]);
 
-  const deleteConversation = async (id: string) => {
+  const deleteConversation = useCallback(async (id: string) => {
     if (confirm('Chat wirklich löschen?')) {
       await supabase.from('conversations').delete().eq('id', id);
-      if (currentConversationId === id) {
-        startNewChat();
+      if (currentConversationId === id && user) {
+        startNewChat(user.id);
       }
-      loadConversations();
+      if (user) loadConversations(user.id);
     }
-  };
+  }, [supabase, currentConversationId, user, startNewChat, loadConversations]);
 
   // ============================================
-  // 🔥 AUTH MIT FIX FÜR STRICT MODE
+  // PREMIUM
+  // ============================================
+  const handlePremium = useCallback(async () => {
+    const res = await fetch('/api/stripe/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user?.id, email: user?.email }),
+    });
+    const { url } = await res.json();
+    if (url) window.location.href = url;
+  }, [user]);
+
+  // ============================================
+  // AUTH INITIALISIERUNG
   // ============================================
   useEffect(() => {
     setMounted(true);
     
-    // 🔥 Verhindert doppelte Ausführung in React Strict Mode
     if (initCalled.current) return;
     initCalled.current = true;
 
@@ -171,7 +185,7 @@ export default function Home() {
       console.log('🔍 Home: Initialisiere Auth...');
       
       try {
-        // 1. Code aus URL verarbeiten (falls vorhanden)
+        // 1. Code aus URL verarbeiten
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
         
@@ -183,36 +197,43 @@ export default function Home() {
             window.location.href = '/login';
             return;
           }
-          // Code aus URL entfernen
           window.history.replaceState({}, '', '/');
         }
         
-        // 2. Session prüfen
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        // 2. User mit getUser() holen (zuverlässiger auf Vercel)
+        const { data: { user: authenticatedUser }, error: userError } = await supabase.auth.getUser();
         
-        if (sessionError) {
-          console.error('❌ Session Error:', sessionError);
+        if (userError) {
+          console.error('❌ User Error:', userError);
           window.location.href = '/login';
           return;
         }
-       if (session) {
-  console.log('✅ Session gefunden:', session.user.email);
-  setUser(session.user);
-  setUserEmail(session.user.email || '');
-  
-  // 🔥 Minimal: Nur Auth auf true setzen
-  setAuthChecked(true);
-  
-  // 🔥 KEINE anderen Funktionen
-  console.log('✅ Auth fertig, Seite wird gerendert');
-  
-} else {
-  console.log('⚠️ Keine Session, redirect zu /login');
-  window.location.href = '/login';
-  return;
-}
- 
-        setAuthChecked(true);
+        
+        if (authenticatedUser) {
+          console.log('✅ User gefunden:', authenticatedUser.email);
+          setUser(authenticatedUser);
+          setUserEmail(authenticatedUser.email || '');
+          
+          // 3. Daten laden (mit userId direkt)
+          await loadConversations(authenticatedUser.id);
+          await startNewChat(authenticatedUser.id);
+          
+          // 4. Premium-Status prüfen
+          const { data: trusted } = await supabase
+            .from('trusted_users')
+            .select('role')
+            .eq('user_id', authenticatedUser.id)
+            .maybeSingle();
+          
+          setIsPremium(trusted?.role === 'premium' || trusted?.role === 'admin');
+          startChatTimer();
+          setAuthChecked(true);
+          
+        } else {
+          console.log('⚠️ Kein User, redirect zu /login');
+          window.location.href = '/login';
+          return;
+        }
         
       } catch (err) {
         console.error('❌ Init Error:', err);
@@ -222,15 +243,15 @@ export default function Home() {
     
     initAuth();
     
-    // 🔥 Auth State Change Listener
+    // 5. Auth State Change Listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('🔐 Auth State Change:', event, session?.user?.email);
       
       if (event === 'SIGNED_IN' && session) {
         setUser(session.user);
         setUserEmail(session.user.email || '');
-        loadConversations();
-        startNewChat();
+        loadConversations(session.user.id);
+        startNewChat(session.user.id);
       }
       
       if (event === 'SIGNED_OUT') {
@@ -248,41 +269,40 @@ export default function Home() {
       subscription.unsubscribe();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, []);
+  }, [supabase, loadConversations, startNewChat, startChatTimer]);
 
-  const handleLogout = async () => {
+  // ============================================
+  // LOGOUT
+  // ============================================
+  const handleLogout = useCallback(async () => {
     await supabase.auth.signOut();
     window.location.href = '/login';
-  };
+  }, [supabase]);
 
-  const handlePremium = async () => {
-    const res = await fetch('/api/stripe/checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user?.id, email: user?.email }),
-    });
-    const { url } = await res.json();
-    if (url) window.location.href = url;
-  };
-
-  const scrollToBottom = () => {
+  // ============================================
+  // SCROLL
+  // ============================================
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, scrollToBottom]);
 
-  const autoResize = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  // ============================================
+  // TEXTAREA AUTO-RESIZE
+  // ============================================
+  const autoResize = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const textarea = e.target;
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-  };
+  }, []);
 
   // ============================================
   // 🎤 VOICE INPUT
   // ============================================
-  const startListening = async () => {
+  const startListening = useCallback(async () => {
     if (limitReached && !isPremium) {
       alert('Limit erreicht! Bitte Premium buchen.');
       return;
@@ -315,12 +335,12 @@ export default function Home() {
     };
     recognition.onend = () => setIsListening(false);
     recognition.start();
-  };
+  }, [limitReached, isPremium]);
 
   // ============================================
   // 📸 BILD-UPLOAD
   // ============================================
-  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     
@@ -372,12 +392,12 @@ export default function Home() {
       }
     };
     reader.readAsDataURL(file);
-  };
+  }, [isPremium, pdfCount, MAX_PDF, user, addSystemMessage]);
 
   // ============================================
   // SEND MESSAGE
   // ============================================
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     if (!input.trim() || loading) return;
     
     if (limitReached && !isPremium) {
@@ -407,25 +427,25 @@ export default function Home() {
       });
       const data = await res.json();
       setMessages([...newMessages, { role: 'assistant', content: data.response }]);
-      loadConversations();
+      if (user) loadConversations(user.id);
     } catch {
       setMessages([...newMessages, { role: 'assistant', content: 'Fehler aufgetreten. Bitte versuch es nochmal.' }]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, loading, limitReached, isPremium, messages, user, currentConversationId, loadConversations]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
-  };
+  }, [sendMessage]);
 
   // ============================================
-  // FEEDBACK (mit user_id fix)
+  // FEEDBACK
   // ============================================
-  const saveFeedback = async (feedback: Feedback, korrektur?: string) => {
+  const saveFeedback = useCallback(async (feedback: Feedback, korrektur?: string) => {
     try {
       const letzteNachricht = messages[messages.length - 1];
       const vorherigeNachricht = messages[messages.length - 2];
@@ -472,13 +492,13 @@ export default function Home() {
     } catch (error) {
       console.error('Feedback Exception:', error);
     }
-  };
+  }, [messages, user, userEmail, supabase]);
 
-  const formatTime = (seconds: number) => {
+  const formatTime = useCallback((seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
+  }, []);
 
   // ============================================
   // RENDER
@@ -495,7 +515,7 @@ export default function Home() {
   }
 
   if (!user) {
-    return null; // Redirect läuft bereits
+    return null;
   }
 
   return (
@@ -527,7 +547,7 @@ export default function Home() {
           </div>
 
           <button
-            onClick={startNewChat}
+            onClick={() => user && startNewChat(user.id)}
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg mb-4 transition-colors text-sm font-medium"
           >
             + Neuer Chat
