@@ -17,6 +17,7 @@ const deepseek = new OpenAI({
   baseURL: 'https://api.deepseek.com',
 });
 
+// Vision Client (Google Cloud)
 const visionClient = new ImageAnnotatorClient({
   apiKey: process.env.GOOGLE_VISION_API_KEY,
 });
