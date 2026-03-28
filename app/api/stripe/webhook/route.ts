@@ -1,59 +1,44 @@
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
 
 export async function POST(req: Request) {
+  const supabase = await createClient();
   const body = await req.text();
   const signature = req.headers.get('stripe-signature')!;
   
-  let event: Stripe.Event;
-  
   try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      signature,
-      process.env.STRIPE_WEBHOOK_SECRET!
-    );
-  } catch (err) {
-    return NextResponse.json({ error: 'Webhook Fehler' }, { status: 400 });
-  }
-  
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object as Stripe.Checkout.Session;
-    const userId = session.metadata?.userId;
+    const event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
     
-    if (userId) {
-      const premiumUntil = new Date();
-      premiumUntil.setDate(premiumUntil.getDate() + 30);
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const userId = session.metadata?.userId;
       
-      await supabase
-        .from('user_limits')
-        .update({ 
-          premium: true, 
-          premium_until: premiumUntil.toISOString().split('T')[0],
-          stripe_subscription_id: session.subscription
-        })
-        .eq('user_id', userId);
+      if (userId) {
+        // User auf Premium setzen
+        await supabase
+          .from('trusted_users')
+          .upsert({
+            user_id: userId,
+            email: session.customer_email,
+            role: 'premium',
+            active: true,
+          });
+        
+        console.log(`✅ Premium aktiviert für: ${userId}`);
+      }
     }
-  }
-  
-  if (event.type === 'customer.subscription.deleted') {
-    const subscription = event.data.object as Stripe.Subscription;
-    const { data: userLimit } = await supabase
-      .from('user_limits')
-      .select('user_id')
-      .eq('stripe_subscription_id', subscription.id)
-      .single();
     
-    if (userLimit) {
-      await supabase
-        .from('user_limits')
-        .update({ premium: false, premium_until: null })
-        .eq('user_id', userLimit.user_id);
-    }
+    return NextResponse.json({ received: true });
+    
+  } catch (error) {
+    console.error('Stripe Webhook Error:', error);
+    return NextResponse.json(
+      { error: 'Webhook signature verification failed' },
+      { status: 400 }
+    );
   }
-  
-  return NextResponse.json({ received: true });
 }

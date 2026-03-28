@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 import { ImageAnnotatorClient } from '@google-cloud/vision';
 import OpenAI from 'openai';
 import { checkPremium, incrementUsage } from '@/lib/premium';
@@ -176,6 +176,9 @@ WENN die Struktur fehlt → korrigiere dich selbst und schreibe neu.`;
 export async function POST(req: Request) {
   try {
     const { image, message = '', userId } = await req.json();
+
+    // 🔥 SUPABASE CLIENT ERSTELLEN
+    const supabase = await createClient();
 
     if (!image) {
       return NextResponse.json({

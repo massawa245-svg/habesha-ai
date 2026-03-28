@@ -1,63 +1,46 @@
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function POST(req: Request) {
+  const supabase = await createClient();
+  
   try {
     const { userId, email } = await req.json();
     
     if (!userId || !email) {
-      return NextResponse.json({ error: 'Fehlende Daten' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing userId or email' },
+        { status: 400 }
+      );
     }
     
-    // Hole oder erstelle Stripe Customer
-    let { data: userLimit } = await supabase
-      .from('user_limits')
-      .select('stripe_customer_id')
-      .eq('user_id', userId)
-      .single();
-    
-    let customerId = userLimit?.stripe_customer_id;
-    
-    if (!customerId) {
-      const customer = await stripe.customers.create({ email });
-      customerId = customer.id;
-      await supabase
-        .from('user_limits')
-        .update({ stripe_customer_id: customerId })
-        .eq('user_id', userId);
-    }
-    
-    // Checkout Session erstellen
     const session = await stripe.checkout.sessions.create({
-      customer: customerId,
       payment_method_types: ['card'],
+      mode: 'subscription',
       line_items: [
         {
-          price_data: {
-            currency: 'eur',
-            product_data: {
-              name: 'Habesha AI Premium',
-              description: 'Unbegrenzte Brief-Analysen + alle Features',
-            },
-            unit_amount: 999, // 9,99€
-            recurring: { interval: 'month' },
-          },
+          price: process.env.STRIPE_PRICE_ID,
           quantity: 1,
         },
       ],
-      mode: 'subscription',
-      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/premium-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/premium-cancel`,
-      metadata: { userId },
+      customer_email: email,
+      success_url: `${process.env.NEXT_PUBLIC_BASE_URL}/?success=true`,
+      cancel_url: `${process.env.NEXT_PUBLIC_BASE_URL}/?canceled=true`,
+      metadata: {
+        userId,
+      },
     });
     
     return NextResponse.json({ url: session.url });
     
   } catch (error) {
-    console.error('Stripe Fehler:', error);
-    return NextResponse.json({ error: 'Fehler bei Zahlung' }, { status: 500 });
+    console.error('Stripe Checkout Error:', error);
+    return NextResponse.json(
+      { error: 'Failed to create checkout session' },
+      { status: 500 }
+    );
   }
 }
