@@ -61,11 +61,52 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState<boolean>(false);
+
+  // ============================================
+  // 🔥 PREMIUM LIMITS
+  // ============================================
+  const [pdfCount, setPdfCount] = useState<number>(0);
+  const [remainingSeconds, setRemainingSeconds] = useState<number>(30 * 60);
+  const [limitReached, setLimitReached] = useState<boolean>(false);
+  const [isPremium, setIsPremium] = useState<boolean>(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const initCalled = useRef<boolean>(false); // 🔥 Verhindert doppelte Init in Strict Mode
+
+  const MAX_PDF = 8;
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
   const supabase = createClient();
+
+  // ============================================
+  // TIMER FÜR 30 MINUTEN CHAT-LIMIT
+  // ============================================
+  const startChatTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      if (isPremium) return;
+      if (limitReached) return;
+      
+      setRemainingSeconds(prev => {
+        if (prev <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          setLimitReached(true);
+          addSystemMessage('⏰ Deine 30 Minuten kostenlose Chat-Zeit sind abgelaufen. Bitte Premium buchen um weiterzumachen.');
+          return 0;
+        }
+        if (prev === 300) {
+          addSystemMessage('⏳ Hinweis: In 5 Minuten endet deine kostenlose Chat-Zeit. Buche Premium für unbegrenzte Nutzung.');
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const addSystemMessage = (content: string) => {
+    setMessages(prev => [...prev, { role: 'assistant', content }]);
+  };
 
   // ============================================
   // CHAT-VERLAUF FUNKTIONEN
@@ -92,9 +133,10 @@ export default function Home() {
   };
 
   const startNewChat = async () => {
+    if (!user) return;
     const { data } = await supabase
       .from('conversations')
-      .insert({ user_id: user?.id, title: 'Neues Gespräch' })
+      .insert({ user_id: user.id, title: 'Neues Gespräch' })
       .select()
       .single();
     if (data) {
@@ -116,54 +158,111 @@ export default function Home() {
   };
 
   // ============================================
-  // 🔥 AUTH MIT OAuth-CODE VERARBEITUNG
+  // 🔥 AUTH MIT FIX FÜR STRICT MODE
   // ============================================
   useEffect(() => {
     setMounted(true);
     
+    // 🔥 Verhindert doppelte Ausführung in React Strict Mode
+    if (initCalled.current) return;
+    initCalled.current = true;
+
     const initAuth = async () => {
-      // 1. OAuth-Code aus URL verarbeiten (wichtig für Google Login!)
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get('code');
+      console.log('🔍 Home: Initialisiere Auth...');
       
-      if (code) {
-        console.log('🔑 OAuth-Code gefunden, tausche gegen Session...');
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (error) {
-          console.error('❌ OAuth Fehler:', error);
+      try {
+        // 1. Code aus URL verarbeiten (falls vorhanden)
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        
+        if (code) {
+          console.log('🔑 OAuth-Code gefunden, tausche gegen Session...');
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) {
+            console.error('❌ OAuth Fehler:', error);
+            window.location.href = '/login';
+            return;
+          }
+          // Code aus URL entfernen
+          window.history.replaceState({}, '', '/');
+        }
+        
+        // 2. Session prüfen
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError) {
+          console.error('❌ Session Error:', sessionError);
           window.location.href = '/login';
           return;
         }
-        // Code aus URL entfernen
-        window.history.replaceState({}, '', '/');
-      }
-      
-      // 2. Session prüfen
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        setUser(session.user);
-        setUserEmail(session.user.email || '');
-        await loadConversations();
-        await startNewChat();
-      } else {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          setUser(user);
-          setUserEmail(user.email || '');
-          await loadConversations();
-          await startNewChat();
-        } else {
-          window.location.href = '/login';
-        }
+       if (session) {
+  console.log('✅ Session gefunden:', session.user.email);
+  setUser(session.user);
+  setUserEmail(session.user.email || '');
+  
+  // 🔥 Minimal: Nur Auth auf true setzen
+  setAuthChecked(true);
+  
+  // 🔥 KEINE anderen Funktionen
+  console.log('✅ Auth fertig, Seite wird gerendert');
+  
+} else {
+  console.log('⚠️ Keine Session, redirect zu /login');
+  window.location.href = '/login';
+  return;
+}
+ 
+        setAuthChecked(true);
+        
+      } catch (err) {
+        console.error('❌ Init Error:', err);
+        window.location.href = '/login';
       }
     };
     
     initAuth();
+    
+    // 🔥 Auth State Change Listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('🔐 Auth State Change:', event, session?.user?.email);
+      
+      if (event === 'SIGNED_IN' && session) {
+        setUser(session.user);
+        setUserEmail(session.user.email || '');
+        loadConversations();
+        startNewChat();
+      }
+      
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setUserEmail('');
+        window.location.href = '/login';
+      }
+      
+      if (event === 'TOKEN_REFRESHED') {
+        console.log('✅ Token refreshed');
+      }
+    });
+    
+    return () => {
+      subscription.unsubscribe();
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     window.location.href = '/login';
+  };
+
+  const handlePremium = async () => {
+    const res = await fetch('/api/stripe/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user?.id, email: user?.email }),
+    });
+    const { url } = await res.json();
+    if (url) window.location.href = url;
   };
 
   const scrollToBottom = () => {
@@ -184,6 +283,10 @@ export default function Home() {
   // 🎤 VOICE INPUT
   // ============================================
   const startListening = async () => {
+    if (limitReached && !isPremium) {
+      alert('Limit erreicht! Bitte Premium buchen.');
+      return;
+    }
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       alert('Dein Browser unterstützt keine Spracheingabe.\nBitte Chrome oder Edge verwenden.');
       return;
@@ -220,18 +323,36 @@ export default function Home() {
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    
+    if (!isPremium && pdfCount >= MAX_PDF) {
+      alert(`⚠️ Du hast das Limit von ${MAX_PDF} Uploads erreicht. Bitte Premium buchen für unbegrenzte Uploads.`);
+      return;
+    }
+    
     if (file.size > 5 * 1024 * 1024) {
       alert('📸 Bild ist zu groß. Maximal 5 MB erlaubt.');
       return;
     }
+    
     setUploading(true);
     const reader = new FileReader();
     reader.onload = async (e) => {
       const base64Image = e.target?.result as string;
+      
+      if (!isPremium) {
+        const newCount = pdfCount + 1;
+        setPdfCount(newCount);
+        if (newCount >= MAX_PDF) {
+          setLimitReached(true);
+          addSystemMessage(`⚠️ Du hast das Limit von ${MAX_PDF} Uploads erreicht. Buche Premium für unbegrenzte Nutzung.`);
+        }
+      }
+      
       setMessages((prev) => [
         ...prev,
         { role: 'user', content: '📸 Bild hochgeladen', image: base64Image },
       ]);
+      
       try {
         const res = await fetch('/api/analyze-document', {
           method: 'POST',
@@ -258,12 +379,19 @@ export default function Home() {
   // ============================================
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
+    
+    if (limitReached && !isPremium) {
+      alert('⛔ Limit erreicht! Bitte Premium buchen um weiter zu chatten.');
+      return;
+    }
+    
     const userMessage: Message = { role: 'user', content: input };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
     setLoading(true);
     if (inputRef.current) inputRef.current.style.height = 'auto';
+    
     try {
       const historyForApi = newMessages.map(msg => ({ role: msg.role, content: msg.content }));
       const res = await fetch('/api/chat', {
@@ -295,7 +423,7 @@ export default function Home() {
   };
 
   // ============================================
-  // FEEDBACK
+  // FEEDBACK (mit user_id fix)
   // ============================================
   const saveFeedback = async (feedback: Feedback, korrektur?: string) => {
     try {
@@ -303,15 +431,20 @@ export default function Home() {
       const vorherigeNachricht = messages[messages.length - 2];
       if (letzteNachricht?.role !== 'assistant' || vorherigeNachricht?.role !== 'user') return;
 
+      if (!user?.id) {
+        console.warn('⚠️ Keine user_id vorhanden, Feedback wird nicht gespeichert');
+        return;
+      }
+
       let isTrusted = false;
       if (userEmail) {
         try {
           const { data: trusted } = await supabase
             .from('trusted_users')
             .select('*')
-            .eq('email', userEmail)
+            .eq('user_id', user.id)
             .maybeSingle();
-          isTrusted = !!trusted;
+          isTrusted = !!trusted && (trusted.role === 'beta' || trusted.role === 'admin');
         } catch (e) {
           console.log('Fehler bei Trusted-Check:', e);
         }
@@ -321,28 +454,49 @@ export default function Home() {
 
       const { error } = await supabase.from(table).insert([
         {
+          user_id: user.id,
           question: vorherigeNachricht.content,
           ai_response: letzteNachricht.content,
           user_feedback: feedback,
           corrected_response: korrektur ?? null,
           language: 'tigrinya',
-          user_id: user?.id || null,
-          session_id: localStorage.getItem('session_id') ?? 'test-session',
+          session_id: localStorage.getItem('session_id') ?? 'unknown',
         },
       ]);
 
       if (error) {
         console.error('Feedback Fehler:', error);
+      } else {
+        console.log(`✅ Feedback gespeichert in: ${table}`);
       }
     } catch (error) {
       console.error('Feedback Exception:', error);
     }
   };
 
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   // ============================================
   // RENDER
   // ============================================
-  if (!mounted) return null;
+  if (!mounted || !authChecked) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500 mx-auto mb-4"></div>
+          <p>Lade Habesha AI...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return null; // Redirect läuft bereits
+  }
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-emerald-950 overflow-hidden">
@@ -427,29 +581,15 @@ export default function Home() {
                   <span className="block w-5 h-0.5 bg-white rounded-full"></span>
                 </div>
               </button>
-              <div className="w-9 h-9 bg-white/20 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0">
-                🇪🇷
-              </div>
               <div>
                 <h1 className="text-lg font-semibold text-white leading-tight">Habesha AI</h1>
-                <p className="text-xs text-emerald-200">
-                  {user ? user.email?.split('@')[0] : 'Gast'} • {loading ? 'tippt...' : 'online'}
-                </p>
               </div>
             </div>
 
             <div className="flex gap-2 items-center">
-              {user && (
+              {!isPremium && (
                 <button
-                  onClick={async () => {
-                    const res = await fetch('/api/stripe/checkout', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ userId: user.id, email: user.email }),
-                    });
-                    const { url } = await res.json();
-                    if (url) window.location.href = url;
-                  }}
+                  onClick={handlePremium}
                   className="bg-yellow-500 hover:bg-yellow-600 text-black px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
                 >
                   💎 Premium
@@ -463,17 +603,36 @@ export default function Home() {
                   🚪 Logout
                 </button>
               )}
-              {!user && (
-                <a
-                  href="/login"
-                  className="text-white px-3 py-1.5 hover:bg-white/10 rounded-full flex items-center gap-1.5 text-sm"
-                >
-                  🔑 Login
-                </a>
-              )}
             </div>
           </div>
         </header>
+
+        {/* Premium-Limit Banner */}
+        {limitReached && !isPremium && (
+          <div className="bg-amber-900/80 border-l-4 border-amber-500 p-3 m-3 rounded-lg">
+            <p className="text-amber-200 text-sm">
+              ⚠️ <strong>Limit erreicht</strong><br />
+              {pdfCount >= MAX_PDF 
+                ? `Du hast ${pdfCount}/${MAX_PDF} Uploads genutzt.` 
+                : `Deine 30 Minuten kostenlose Chat-Zeit ist abgelaufen.`}
+              <br />Buche Premium für unbegrenzte Nutzung.
+            </p>
+            <button
+              onClick={handlePremium}
+              className="mt-2 bg-amber-500 hover:bg-amber-600 text-black px-4 py-1.5 rounded-full text-sm font-medium"
+            >
+              🚀 Jetzt Premium buchen
+            </button>
+          </div>
+        )}
+
+        {/* Limit-Status-Anzeige */}
+        {!isPremium && !limitReached && (
+          <div className="bg-gray-800/50 px-4 py-2 text-xs text-gray-400 flex justify-between items-center border-b border-gray-700">
+            <span>📄 Uploads: {pdfCount}/{MAX_PDF}</span>
+            <span>⏱️ Verbleibende Zeit: {formatTime(remainingSeconds)}</span>
+          </div>
+        )}
 
         {/* Chat Messages */}
         <main className="flex-1 overflow-y-auto">
@@ -491,16 +650,14 @@ export default function Home() {
                 <p className="text-gray-500 text-xs mt-6">
                   🎤 Spracheingabe | 📸 Bilder | ⚡ Blitzschnell
                 </p>
+                <p className="text-gray-600 text-xs mt-4">
+                  ⏱️ Kostenlos: 30 Minuten Chat · {MAX_PDF} Uploads
+                </p>
               </div>
             ) : (
               messages.map((msg, i) => (
-                <div key={i} className="mb-3">
+                <div key={i} className="mb-4">
                   <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    {msg.role === 'assistant' && (
-                      <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-sm mr-2 flex-shrink-0">
-                        🤖
-                      </div>
-                    )}
                     <div
                       className={`max-w-[75%] rounded-2xl px-4 py-2 ${
                         msg.role === 'user'
@@ -523,15 +680,10 @@ export default function Home() {
                         </span>
                       )}
                     </div>
-                    {msg.role === 'user' && (
-                      <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-white text-sm ml-2 flex-shrink-0">
-                        👤
-                      </div>
-                    )}
                   </div>
 
                   {msg.role === 'assistant' && (
-                    <div className="flex gap-2 mt-1 ml-10">
+                    <div className="flex gap-2 mt-1 ml-4">
                       <button
                         onClick={() => saveFeedback('gut')}
                         className="text-[11px] bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full hover:bg-emerald-600/30 hover:text-emerald-300 transition-colors"
@@ -554,10 +706,7 @@ export default function Home() {
             )}
 
             {loading && (
-              <div className="flex justify-start mb-3">
-                <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-sm mr-2">
-                  🤖
-                </div>
+              <div className="flex justify-start mb-4">
                 <div className="bg-gray-700 rounded-2xl rounded-bl-sm px-4 py-3">
                   <div className="flex gap-1">
                     <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
@@ -569,7 +718,7 @@ export default function Home() {
             )}
 
             {uploading && (
-              <div className="flex justify-end mb-3">
+              <div className="flex justify-end mb-4">
                 <div className="bg-gray-700 rounded-2xl px-4 py-2 text-gray-300 text-sm">
                   📸 Bild wird hochgeladen...
                 </div>
@@ -577,7 +726,7 @@ export default function Home() {
             )}
 
             {isListening && (
-              <div className="flex justify-start mb-3">
+              <div className="flex justify-start mb-4">
                 <div className="bg-gray-700 rounded-2xl px-4 py-2 text-gray-300 text-sm flex items-center gap-2">
                   <span>🎤</span>
                   <span>Höre zu...</span>
@@ -593,25 +742,25 @@ export default function Home() {
         {/* Input Area */}
         <div className="border-t border-gray-700 p-3 bg-gray-800/90 backdrop-blur-sm flex-shrink-0">
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
-            <label className="cursor-pointer text-gray-400 hover:text-emerald-400 transition-colors p-2">
+            <label className={`cursor-pointer p-2 transition-colors ${limitReached && !isPremium ? 'opacity-50 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-400'}`}>
               <input
                 type="file"
                 accept="image/*"
                 className="hidden"
                 onChange={handleImageUpload}
-                disabled={uploading || loading}
+                disabled={uploading || loading || (limitReached && !isPremium)}
               />
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
             </label>
 
             <button
               onClick={startListening}
-              disabled={loading || uploading || isListening}
-              className={`text-gray-400 hover:text-emerald-400 transition-colors p-2 ${
-                isListening ? 'text-red-400 animate-pulse' : ''
-              }`}
+              disabled={loading || uploading || isListening || (limitReached && !isPremium)}
+              className={`p-2 transition-colors ${
+                isListening ? 'text-red-400 animate-pulse' : 'text-gray-400 hover:text-emerald-400'
+              } ${(limitReached && !isPremium) ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
@@ -627,19 +776,19 @@ export default function Home() {
                   autoResize(e);
                 }}
                 onKeyDown={handleKeyDown}
-                placeholder="Nachricht"
+                placeholder={limitReached && !isPremium ? "Limit erreicht - Premium buchen" : "Nachricht"}
                 className="w-full bg-transparent text-white text-sm placeholder-gray-400 focus:outline-none resize-none overflow-hidden"
                 rows={1}
                 style={{ minHeight: '40px', maxHeight: '120px' }}
-                disabled={loading || uploading || isListening}
+                disabled={loading || uploading || isListening || (limitReached && !isPremium)}
               />
             </div>
 
             <button
               onClick={sendMessage}
-              disabled={!input.trim() || loading || uploading || isListening}
+              disabled={!input.trim() || loading || uploading || isListening || (limitReached && !isPremium)}
               className={`p-2 rounded-full transition-colors ${
-                input.trim() && !loading
+                input.trim() && !loading && !(limitReached && !isPremium)
                   ? 'text-emerald-400 hover:text-emerald-300'
                   : 'text-gray-500 cursor-not-allowed'
               }`}
