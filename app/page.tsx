@@ -185,22 +185,7 @@ export default function Home() {
       console.log('🔍 Home: Initialisiere Auth...');
       
       try {
-        // 1. Code aus URL verarbeiten
-        const params = new URLSearchParams(window.location.search);
-        const code = params.get('code');
-        
-        if (code) {
-          console.log('🔑 OAuth-Code gefunden, tausche gegen Session...');
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) {
-            console.error('❌ OAuth Fehler:', error);
-            window.location.href = '/login';
-            return;
-          }
-          window.history.replaceState({}, '', '/');
-        }
-        
-        // 2. User mit getUser() holen (zuverlässiger auf Vercel)
+        // 🔥 KEIN exchangeCode mehr hier! Nur getUser()
         const { data: { user: authenticatedUser }, error: userError } = await supabase.auth.getUser();
         
         if (userError) {
@@ -214,11 +199,13 @@ export default function Home() {
           setUser(authenticatedUser);
           setUserEmail(authenticatedUser.email || '');
           
-          // 3. Daten laden (mit userId direkt)
           await loadConversations(authenticatedUser.id);
-          await startNewChat(authenticatedUser.id);
           
-          // 4. Premium-Status prüfen
+          // 🔥 Nur neuen Chat starten wenn keiner existiert
+          if (!currentConversationId) {
+            await startNewChat(authenticatedUser.id);
+          }
+          
           const { data: trusted } = await supabase
             .from('trusted_users')
             .select('role')
@@ -243,7 +230,7 @@ export default function Home() {
     
     initAuth();
     
-    // 5. Auth State Change Listener
+    // Auth State Change Listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('🔐 Auth State Change:', event, session?.user?.email);
       
@@ -269,7 +256,7 @@ export default function Home() {
       subscription.unsubscribe();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [supabase, loadConversations, startNewChat, startChatTimer]);
+  }, [supabase, loadConversations, startNewChat, startChatTimer, currentConversationId]);
 
   // ============================================
   // LOGOUT
