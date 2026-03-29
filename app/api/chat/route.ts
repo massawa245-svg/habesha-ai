@@ -200,7 +200,8 @@ export async function POST(req: Request) {
     // ============================================
     // 🌍 AUTO SPRACHE ERKENNEN (oder forced)
     // ============================================
-    const userLang = forcedLang || detectLanguage(message);
+    const validLangs: Lang[] = ['de', 'ti', 'am', 'en'];
+const userLang: Lang = validLangs.includes(forcedLang) ? (forcedLang as Lang) : detectLanguage(message);
     
     const langMap: Record<Lang, string> = {
       de: 'German',
