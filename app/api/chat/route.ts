@@ -14,16 +14,55 @@ const deepseek = new OpenAI({
 });
 
 // ============================================
-// 🔍 INTENT ERKENNUNG
+// 🌍 AUTO SPRACHERKENNUNG
+// ============================================
+export type Lang = 'de' | 'ti' | 'am' | 'en';
+
+function detectLanguage(text: string): Lang {
+  if (!text) return 'de';
+
+  // Ethiopic Script (Tigrinya + Amharic)
+  if (/[\u1200-\u137F]/.test(text)) {
+    // Heuristische Unterscheidung
+    if (text.includes('እ') || text.includes('ነ') || text.includes('አ')) {
+      return 'am'; // Amharic
+    }
+    return 'ti'; // Tigrinya
+  }
+
+  // Englisch
+  if (/\b(the|and|what|how|why|hello|please|thanks|translate|what is)\b/i.test(text)) {
+    return 'en';
+  }
+
+  // Deutsch
+  if (/\b(wie|was|warum|hallo|bitte|danke|übersetze|was heißt|erkläre)\b/i.test(text)) {
+    return 'de';
+  }
+
+  return 'de';
+}
+
+// ============================================
+// 🔍 INTENT ERKENNUNG (MEHRSPRACHIG)
 // ============================================
 function detectIntent(message: string): 'translation' | 'definition' | 'conversation' {
   const msg = message.toLowerCase();
 
+  // Deutsch
   if (msg.includes('wie sagt man') || msg.includes('übersetze') || msg.includes('was heißt')) {
     return 'translation';
   }
+  // Englisch
+  if (msg.includes('translate') || msg.includes('what is') || msg.includes('how do you say')) {
+    return 'translation';
+  }
+  // Tigrinya/Amharic
+  if (msg.includes('ከመይ') || msg.includes('ምን') || msg.includes('እንታይ')) {
+    return 'translation';
+  }
 
-  if (msg.includes('erkläre') || msg.includes('was bedeutet')) {
+  if (msg.includes('erkläre') || msg.includes('was bedeutet') || msg.includes('explain') || msg.includes('what means')) {
     return 'definition';
   }
 
@@ -31,7 +70,7 @@ function detectIntent(message: string): 'translation' | 'definition' | 'conversa
 }
 
 // ============================================
-// 🔎 SUPABASE SUCHE (VERBESSERT) - JETZT MIT supabaseClient PARAMETER
+// 🔎 SUPABASE SUCHE
 // ============================================
 async function searchSupabase(supabase: any, message: string) {
   const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
@@ -64,11 +103,10 @@ async function searchSupabase(supabase: any, message: string) {
 }
 
 // ============================================
-// 🧠 SICHERES AUTO-LEARNING - JETZT MIT supabaseClient PARAMETER
+// 🧠 SICHERES AUTO-LEARNING
 // ============================================
 async function autoLearnSafe(supabase: any, question: string, answer: string) {
   try {
-    // ❌ NICHT speichern wenn:
     if (
       !answer ||
       answer.includes('ኣይፈልጥን') ||
@@ -78,7 +116,6 @@ async function autoLearnSafe(supabase: any, question: string, answer: string) {
       return;
     }
 
-    // Prüfen ob schon existiert
     const { data: existing } = await supabase
       .from('training_data')
       .select('id')
@@ -139,7 +176,7 @@ async function askAI(messages: any[], temperature = 0.3): Promise<string> {
 // ============================================
 export async function POST(req: Request) {
   try {
-    const { message, history = [], userId, conversationId, isNewConversation } = await req.json();
+    const { message, history = [], userId, forcedLang } = await req.json();
 
     // 🔥 SUPABASE CLIENT ERSTELLEN
     const supabase = await createClient();
@@ -161,26 +198,40 @@ export async function POST(req: Request) {
     const { woerterbuch, saetze } = await searchSupabase(supabase, message);
 
     // ============================================
-    // 🧠 SYSTEM PROMPT (JETZT STRIKT!)
+    // 🌍 AUTO SPRACHE ERKENNEN (oder forced)
     // ============================================
+    const userLang = forcedLang || detectLanguage(message);
+    
+    const langMap: Record<Lang, string> = {
+      de: 'German',
+      en: 'English',
+      ti: 'Tigrinya',
+      am: 'Amharic',
+    };
+
     const intent = detectIntent(message);
 
-    const systemPrompt = `Du bist eine Tigrinya-KI.
+    // ============================================
+    // 🧠 DYNAMISCHER SYSTEM PROMPT (MULTILINGUAL)
+    // ============================================
+    const systemPrompt = `
+You are a multilingual AI assistant.
 
-⚠️ REGELN:
-- KEINE Sprachmischung
-- Deutsch → Deutsch antworten
-- Tigrinya → Tigrinya antworten
-- Maximal 2 Sätze
-- Keine erfundenen Wörter
+⚠️ RULES:
+- Respond ONLY in ${langMap[userLang]}
+- NO language mixing
+- Keep answers short (max 2 sentences)
+- Do NOT invent words
+
+User language: ${langMap[userLang]}
 
 Intent: ${intent}
 
-📚 Wörter:
+📚 Dictionary:
 ${woerterbuch.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}
 
-📖 Sätze:
-${saetze.map(s => `"${s.input_text}" → "${s.response_text}"`).join('\n')}
+📖 Training examples:
+${saetze.map(s => `- "${s.input_text}" → "${s.response_text}"`).join('\n')}
 `;
 
     // ============================================
@@ -202,11 +253,15 @@ ${saetze.map(s => `"${s.input_text}" → "${s.response_text}"`).join('\n')}
     // ❗ FALLBACK
     // ============================================
     if (!responseText) {
-      responseText = 'ኣይፈልጥን — Das weiß ich noch nicht.';
+      responseText = userLang === 'ti' 
+        ? 'ኣይፈልጥን — Das weiß ich noch nicht.'
+        : userLang === 'am'
+        ? 'አላውቅም — እስካሁን አልማርኩም።'
+        : 'I don\'t know that yet — still learning.';
     }
 
     // ============================================
-    // 🧠 SICHER LERNEN (MIT supabase CLIENT)
+    // 🧠 SICHER LERNEN
     // ============================================
     await autoLearnSafe(supabase, message, responseText);
 
@@ -218,6 +273,7 @@ ${saetze.map(s => `"${s.input_text}" → "${s.response_text}"`).join('\n')}
 
     return NextResponse.json({
       response: responseText,
+      detectedLang: userLang,
       source: usedSupabase ? 'supabase+ai' : 'ai',
     });
 
