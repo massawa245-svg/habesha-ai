@@ -1,6 +1,6 @@
 // app/admin/page.tsx
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
 type Feedback = {
@@ -30,58 +30,110 @@ export default function AdminDashboard() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  
+  // 🔥 supabase Client stabil halten (nur einmal erstellen)
+  const supabase = useRef(createClient()).current;
+  const authChecked = useRef(false);
 
-  const supabase = createClient();
-
-  useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        window.location.href = '/login';
-        return;
-      }
-      
-      const { data: trusted } = await supabase
-        .from('trusted_users')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('role', 'admin')
-        .maybeSingle();
-      
-      if (!trusted) {
-        window.location.href = '/';
-        return;
-      }
-      
-      setIsAuthorized(true);
-      setLoading(false);
-      
-      loadTempFeedback();
-      loadTrustedUsers();
-    };
-    
-    checkAuth();
-  }, []);
-
-  async function loadTempFeedback() {
+  // ============================================
+  // 🔥 DATEN LADEN (mit useCallback)
+  // ============================================
+  const loadTempFeedback = useCallback(async () => {
     const { data } = await supabase
       .from('user_feedback_temp')
       .select('*')
       .order('created_at', { ascending: false });
     setFeedbacks(data || []);
-  }
+  }, [supabase]);
 
-  async function loadTrustedUsers() {
+  const loadTrustedUsers = useCallback(async () => {
     const { data } = await supabase
       .from('trusted_users')
       .select('*')
       .eq('active', true);
     setTrustedUsers(data || []);
-  }
+  }, [supabase]);
 
-  // 🔥 NEU: Feedback freigeben (immer, auch bei schlecht mit Korrektur)
-  async function approveFeedback(id: string) {
+  // ============================================
+  // 🔥 AUTH CHECK MIT DEBUG LOGS
+  // ============================================
+  useEffect(() => {
+    const checkAuth = async () => {
+      console.log('🔍 Checking Admin Auth...');
+
+      try {
+        // 1. User prüfen
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        
+        console.log('👤 USER ID:', user?.id);
+        console.log('👤 USER EMAIL:', user?.email);
+        console.log('❗ User Error:', userError?.message);
+
+        if (!user) {
+          console.log('❌ Kein User → redirect login');
+          window.location.href = '/login';
+          return;
+        }
+
+        // 2. Admin prüfen (mit user_id)
+        const { data: trusted, error: trustedError } = await supabase
+          .from('trusted_users')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('role', 'admin')
+          .maybeSingle();
+
+        console.log('🛡️ TRUSTED (by user_id):', trusted);
+        console.log('❗ Trusted Error:', trustedError?.message);
+
+        // 3. Fallback: Prüfe auch mit email (für Debug)
+        if (!trusted) {
+          const { data: trustedByEmail } = await supabase
+            .from('trusted_users')
+            .select('*')
+            .eq('email', user.email)
+            .eq('role', 'admin')
+            .maybeSingle();
+          
+          console.log('🛡️ TRUSTED (by email):', trustedByEmail);
+          
+          if (trustedByEmail && !trustedByEmail.user_id) {
+            console.log('⚠️ Achtung: trusted entry hat keine user_id! Bitte migrieren.');
+          }
+        }
+
+        if (!trusted) {
+          console.log('❌ Kein Admin → redirect home');
+          window.location.href = '/';
+          return;
+        }
+
+        console.log('✅ Admin erkannt!');
+
+        setIsAuthorized(true);
+        
+        // 3. Daten laden
+        await loadTempFeedback();
+        await loadTrustedUsers();
+        
+      } catch (err) {
+        console.error('❌ Auth Check Error:', err);
+        window.location.href = '/login';
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    if (!authChecked.current) {
+      authChecked.current = true;
+      checkAuth();
+    }
+  }, [supabase, loadTempFeedback, loadTrustedUsers]);
+
+  // ============================================
+  // 🔥 FEEDBACK AKTIONEN
+  // ============================================
+  const approveFeedback = useCallback(async (id: string) => {
     setProcessingId(id);
     try {
       const feedback = feedbacks.find(f => f.id === id);
@@ -135,10 +187,9 @@ export default function AdminDashboard() {
     } finally {
       setProcessingId(null);
     }
-  }
+  }, [feedbacks, supabase, loadTempFeedback]);
 
-  // Feedback löschen (ohne Training)
-  async function deleteFeedback(id: string) {
+  const deleteFeedback = useCallback(async (id: string) => {
     const feedback = feedbacks.find(f => f.id === id);
     let message = 'Bist du sicher? Dieses Feedback wird gelöscht und NICHT fürs Training verwendet.';
     
@@ -167,10 +218,9 @@ export default function AdminDashboard() {
     } finally {
       setProcessingId(null);
     }
-  }
+  }, [feedbacks, supabase, loadTempFeedback]);
 
-  // Korrektur aktualisieren
-  async function updateCorrection(id: string, currentCorrection: string | null) {
+  const updateCorrection = useCallback(async (id: string, currentCorrection: string | null) => {
     const newCorrection = prompt('Korrektur eingeben:', currentCorrection || '');
     if (newCorrection === null) return;
 
@@ -191,20 +241,23 @@ export default function AdminDashboard() {
     } finally {
       setProcessingId(null);
     }
-  }
+  }, [supabase, loadTempFeedback]);
 
-  async function addTester() {
+  // ============================================
+  // 🔥 BETA-TESTER VERWALTEN
+  // ============================================
+  const addTester = useCallback(async () => {
     if (!newEmail) return;
     
     try {
-      const { data: user } = await supabase
-        .from('auth.users')
-        .select('id')
+      const { data: existing } = await supabase
+        .from('trusted_users')
+        .select('*')
         .eq('email', newEmail)
-        .single();
+        .maybeSingle();
 
-      if (!user) {
-        alert('❌ User mit dieser Email existiert nicht. Der User muss sich zuerst registrieren.');
+      if (existing) {
+        alert('❌ Dieser User ist bereits eingetragen.');
         return;
       }
 
@@ -212,7 +265,6 @@ export default function AdminDashboard() {
         .from('trusted_users')
         .insert({
           email: newEmail,
-          user_id: user.id,
           role: 'beta',
           active: true
         });
@@ -221,14 +273,14 @@ export default function AdminDashboard() {
 
       setNewEmail('');
       loadTrustedUsers();
-      alert('✅ Beta-Tester hinzugefügt!');
+      alert('✅ Beta-Tester hinzugefügt! (Verknüpft sich automatisch beim Login)');
     } catch (error) {
       console.error('Fehler beim Hinzufügen:', error);
       alert('❌ Fehler beim Hinzufügen');
     }
-  }
+  }, [newEmail, supabase, loadTrustedUsers]);
 
-  async function removeTester(email: string) {
+  const removeTester = useCallback(async (email: string) => {
     if (!confirm(`Beta-Tester ${email} wirklich entfernen?`)) return;
     
     try {
@@ -245,8 +297,11 @@ export default function AdminDashboard() {
       console.error('Fehler beim Entfernen:', error);
       alert('❌ Fehler beim Entfernen');
     }
-  }
+  }, [supabase, loadTrustedUsers]);
 
+  // ============================================
+  // 🎨 UI HELPER
+  // ============================================
   const getRatingBadge = (rating: string, hasCorrection: boolean) => {
     if (rating === 'gut') {
       return <span className="bg-green-600 text-white px-2 py-0.5 rounded-full text-xs">👍 Gut</span>;
@@ -259,8 +314,18 @@ export default function AdminDashboard() {
     return <span className="bg-gray-600 text-white px-2 py-0.5 rounded-full text-xs">⚪ Neutral</span>;
   };
 
+  // ============================================
+  // RENDER
+  // ============================================
   if (loading) {
-    return <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">Laden...</div>;
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500 mx-auto mb-4"></div>
+          <p>Lade Admin Dashboard...</p>
+        </div>
+      </div>
+    );
   }
   
   if (!isAuthorized) return null;

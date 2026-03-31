@@ -10,15 +10,20 @@ export async function GET() {
       return NextResponse.json({ isAdmin: false });
     }
     
-    const { data: trusted } = await supabase
+    const { data: trusted, error } = await supabase
       .from('trusted_users')
       .select('*')
-      .eq('email', user.email)
+      .eq('user_id', user.id) // ✅ FIX
       .eq('role', 'admin')
       .maybeSingle();
+
+    console.log('USER:', user);
+    console.log('TRUSTED:', trusted);
+    console.log('ERROR:', error);
     
     return NextResponse.json({ isAdmin: !!trusted });
   } catch (error) {
+    console.error(error);
     return NextResponse.json({ isAdmin: false });
   }
 }

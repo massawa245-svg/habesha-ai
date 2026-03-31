@@ -14,32 +14,56 @@ const deepseek = new OpenAI({
 });
 
 // ============================================
-// 🌍 AUTO SPRACHERKENNUNG
+// 🌍 AUTO SPRACHERKENNUNG (mit Umschrift)
 // ============================================
 export type Lang = 'de' | 'ti' | 'am' | 'en';
 
 function detectLanguage(text: string): Lang {
   if (!text) return 'de';
-
-  // Ethiopic Script (Tigrinya + Amharic)
+  
+  const lowerText = text.toLowerCase();
+  
+  // 1. Ethiopic Script (Tigrinya + Amharic)
   if (/[\u1200-\u137F]/.test(text)) {
-    // Heuristische Unterscheidung
     if (text.includes('እ') || text.includes('ነ') || text.includes('አ')) {
-      return 'am'; // Amharic
+      return 'am';
     }
-    return 'ti'; // Tigrinya
+    return 'ti';
   }
-
-  // Englisch
-  if (/\b(the|and|what|how|why|hello|please|thanks|translate|what is)\b/i.test(text)) {
+  
+  // 2. 🔥 Tigrinya in lateinischer Umschrift
+  const tigrinyaLatin = [
+    'kemey', 'aleka', 'dehan', 'dehando', 'salam', 'selam',
+    'xubok', 'niska', 'emo', 'hawy', 'hawye', 'tigrinya', 'tigrigna',
+    'eritrean', 'eritrea', 'habesha', 'abey', 'tsibuk', 'aykonen',
+    'kemey aleka', 'kemey alaka', 'dehan do', 'selamun alekum'
+  ];
+  
+  if (tigrinyaLatin.some(word => lowerText.includes(word))) {
+    return 'ti';
+  }
+  
+  // 3. Amharic in lateinischer Umschrift
+  const amharicLatin = [
+    'selam', 'salam', 'amharic', 'amharigna', 'ethiopian',
+    'ande', 'hode', 'wede', 'yene', 'ante', 'anchi',
+    'tadiyas', 'endet', 'ne', 'nesh', 'betam', 'aydelm'
+  ];
+  
+  if (amharicLatin.some(word => lowerText.includes(word))) {
+    return 'am';
+  }
+  
+  // 4. Englisch
+  if (/\b(the|and|what|how|why|hello|please|thanks|translate|what is|how are you)\b/i.test(text)) {
     return 'en';
   }
-
-  // Deutsch
-  if (/\b(wie|was|warum|hallo|bitte|danke|übersetze|was heißt|erkläre)\b/i.test(text)) {
+  
+  // 5. Deutsch
+  if (/\b(wie|was|warum|hallo|bitte|danke|übersetze|was heißt|erkläre|wie geht es dir)\b/i.test(text)) {
     return 'de';
   }
-
+  
   return 'de';
 }
 
@@ -57,12 +81,17 @@ function detectIntent(message: string): 'translation' | 'definition' | 'conversa
   if (msg.includes('translate') || msg.includes('what is') || msg.includes('how do you say')) {
     return 'translation';
   }
-  // Tigrinya/Amharic
+  // Tigrinya (lateinisch)
+  if (msg.includes('kemey') || msg.includes('xubok') || msg.includes('dehan')) {
+    return 'translation';
+  }
+  // Tigrinya/Amharic Schrift
   if (msg.includes('ከመይ') || msg.includes('ምን') || msg.includes('እንታይ')) {
     return 'translation';
   }
 
-  if (msg.includes('erkläre') || msg.includes('was bedeutet') || msg.includes('explain') || msg.includes('what means')) {
+  if (msg.includes('erkläre') || msg.includes('was bedeutet') || 
+      msg.includes('explain') || msg.includes('what means')) {
     return 'definition';
   }
 
@@ -70,7 +99,7 @@ function detectIntent(message: string): 'translation' | 'definition' | 'conversa
 }
 
 // ============================================
-// 🔎 SUPABASE SUCHE
+// 🔎 SUPABASE SUCHE (VERBESSERT - sucht in beiden Sprachen)
 // ============================================
 async function searchSupabase(supabase: any, message: string) {
   const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
@@ -80,22 +109,24 @@ async function searchSupabase(supabase: any, message: string) {
   let saetze: any[] = [];
 
   if (words.length > 0) {
-    const filters = words.map(w => `german.ilike.%${w}%`).join(',');
+    // 🔥 SUCHT JETZT IN BEIDEN SPALTEN (Tigrinya und Deutsch)
+    const filters = words.map(w => `german.ilike.%${w}%,tigrinya_word.ilike.%${w}%`).join(',');
 
     const { data: woerter } = await supabase
       .from('dictionary')
       .select('tigrinya_word, german')
       .or(filters)
-      .limit(6);
+      .limit(10); // Mehr Ergebnisse für die KI
 
     woerterbuch = woerter || [];
   }
 
+  // 🔥 Suche in training_data wurde verbessert (flexibler)
   const { data: training } = await supabase
     .from('training_data')
     .select('input_text, response_text')
-    .ilike('input_text', `%${message}%`)
-    .limit(3);
+    .or(`input_text.ilike.%${message}%,response_text.ilike.%${message}%`)
+    .limit(5);
 
   saetze = training || [];
 
@@ -103,19 +134,32 @@ async function searchSupabase(supabase: any, message: string) {
 }
 
 // ============================================
-// 🧠 SICHERES AUTO-LEARNING
+// 🧠 SICHERES AUTO-LEARNING (verbessert - verhindert Müll)
 // ============================================
 async function autoLearnSafe(supabase: any, question: string, answer: string) {
   try {
+    // 🔥 VERBOTENE Muster (keine erfundenen Wörter)
+    const forbiddenPatterns = [
+      'manday', 'manday', 'mondai', 'montag', 'monday',
+      'ኣይፈልጥን', 'weiß ich nicht', 'ich weiß nicht',
+      'I don\'t know', 'no idea', 'not sure'
+    ];
+    
+    // Prüfe ob Antwort verbotene Muster enthält
+    const lowerAnswer = answer.toLowerCase();
+    const hasForbidden = forbiddenPatterns.some(pattern => lowerAnswer.includes(pattern));
+    
     if (
       !answer ||
-      answer.includes('ኣይፈልጥን') ||
-      answer.toLowerCase().includes('weiß ich nicht') ||
-      answer.length > 200
+      hasForbidden ||
+      answer.length > 200 ||
+      answer.length < 3
     ) {
+      console.log('🚫 Auto-Learn verhindert:', answer.substring(0, 50));
       return;
     }
 
+    // Prüfen ob schon existiert
     const { data: existing } = await supabase
       .from('training_data')
       .select('id')
@@ -201,7 +245,7 @@ export async function POST(req: Request) {
     // 🌍 AUTO SPRACHE ERKENNEN (oder forced)
     // ============================================
     const validLangs: Lang[] = ['de', 'ti', 'am', 'en'];
-const userLang: Lang = validLangs.includes(forcedLang) ? (forcedLang as Lang) : detectLanguage(message);
+    const userLang: Lang = validLangs.includes(forcedLang) ? (forcedLang as Lang) : detectLanguage(message);
     
     const langMap: Record<Lang, string> = {
       de: 'German',
@@ -213,22 +257,21 @@ const userLang: Lang = validLangs.includes(forcedLang) ? (forcedLang as Lang) : 
     const intent = detectIntent(message);
 
     // ============================================
-    // 🧠 DYNAMISCHER SYSTEM PROMPT (MULTILINGUAL)
+    // 🧠 DYNAMISCHER SYSTEM PROMPT (MIT ANTI-MANDAY REGEL)
     // ============================================
     const systemPrompt = `
-You are a multilingual AI assistant.
+You are a professional Tigrinya translator. 
 
-⚠️ RULES:
-- Respond ONLY in ${langMap[userLang]}
-- NO language mixing
-- Keep answers short (max 2 sentences)
-- Do NOT invent words
+⚠️ CRITICAL RULES:
+- Use ONLY authentic Tigrinya words.
+- NEVER use English-sounding inventions like "Manday" for Monday. 
+- Monday is ALWAYS "ሰኑይ".
+- If the Dictionary or Training examples below contain a word, you MUST use it.
+- Keep answers short (max 2 sentences).
 
 User language: ${langMap[userLang]}
 
-Intent: ${intent}
-
-📚 Dictionary:
+📚 Dictionary (Priority):
 ${woerterbuch.map(w => `- ${w.tigrinya_word} = ${w.german}`).join('\n')}
 
 📖 Training examples:
