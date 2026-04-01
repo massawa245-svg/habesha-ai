@@ -14,88 +14,90 @@ const deepseek = new OpenAI({
 });
 
 // ============================================
-// 🌍 SPRACHERKENNUNG
+// 🌍 SPRACHERKENNUNG (VERBESSERT)
 // ============================================
-type Lang = 'de' | 'ti' | 'en' | 'code';
-
-function detectLanguage(text: string): Lang {
-  if (!text) return 'de';
+function wantsTigrinya(text: string): boolean {
   const lower = text.toLowerCase();
-  
-  // Sprachwechsel-Befehle
-  if (lower.includes('bitte deutsch') || lower.includes('auf deutsch')) return 'de';
-  if (lower.includes('bitte tigrinya') || lower.includes('auf tigrinya')) return 'ti';
-  if (lower.includes('please english') || lower.includes('in english')) return 'en';
-  
-  // Programmierung
-  if (/function|const|let|import|react|api|fetch|code|programmieren/i.test(lower)) return 'code';
-  
-  // Tigrinya Schrift
-  if (/[\u1200-\u137F]/.test(text)) return 'ti';
-  
-  // Englisch
+  return (
+    /[\u1200-\u137F]/.test(text) ||
+    lower.includes('tigrinya') ||
+    lower.includes('auf tigrinya') ||
+    lower.includes('übersetze') ||
+    lower.includes('translate')
+  );
+}
+
+function detectLanguage(text: string): 'de' | 'ti' | 'en' {
+  if (!text) return 'de';
+  if (wantsTigrinya(text)) return 'ti';
   if (/\b(the|and|hello|how|what|please|thanks)\b/i.test(text)) return 'en';
-  
   return 'de';
 }
 
 // ============================================
-// 🔎 DATABASE SUCHE (NUR AUS DEINEN 5000 WÖRTERN!)
+// 🔧 QUALITÄTSFILTER (SANFT)
 // ============================================
-async function searchDatabase(supabase: any, message: string) {
-  const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
-  const words = clean.split(/\s+/).filter(w => w.length > 2);
-  
-  if (words.length === 0) return null;
-  
-  // 1. SUCHEN IM WÖRTERBUCH (DEINE 5000 WÖRTER!)
-  const filters = words.map(w => `german.ilike.%${w}%`).join(',');
-  
-  const { data: dictionary } = await supabase
-    .from('dictionary')
-    .select('tigrinya_word, german')
-    .or(filters)
-    .limit(3);
-  
-  if (dictionary && dictionary.length > 0) {
-    // Gib das erste gefundene Wort zurück
-    console.log('📚 Wörterbuch Treffer:', dictionary[0].german);
-    return dictionary[0].tigrinya_word;
-  }
-  
-  // 2. SUCHEN IN TRAINING_DATA (wenn vorhanden)
-  const { data: training } = await supabase
-    .from('training_data')
-    .select('input_text, response_text')
-    .ilike('input_text', `%${message}%`)
-    .limit(1);
-  
-  if (training && training.length > 0) {
-    console.log('✅ Training Data Treffer:', training[0].input_text);
-    return training[0].response_text;
-  }
-  
-  return null;
+function isGoodTigrinya(text: string): boolean {
+  if (!text) return false;
+  if (text.length < 3) return false;
+  // Zu viele Wiederholungen vermeiden
+  if (/(.)\1{4,}/.test(text)) return false;
+  return true;
 }
 
 // ============================================
-// 🎯 TIGRINYA PATTERN MATCHING (FALLBACK)
+// 📚 DATABASE HILFE (SEPARAT, NICHT IM SYSTEM PROMPT)
 // ============================================
-function getPatternMatch(message: string): string | null {
-  const lower = message.toLowerCase().trim();
+async function getDictionaryHint(supabase: any, message: string): Promise<string> {
+  const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
+  const words = clean.split(/\s+/).filter(w => w.length > 2);
+  
+  if (words.length === 0) return '';
+  
+  const hints: string[] = [];
+  
+  for (const word of words.slice(0, 3)) {
+    const { data } = await supabase
+      .from('dictionary')
+      .select('tigrinya_word, german')
+      .ilike('german', `%${word}%`)
+      .limit(1);
+    
+    if (data && data.length > 0) {
+      hints.push(`- ${word} = ${data[0].tigrinya_word}`);
+    }
+  }
+  
+  if (hints.length > 0) {
+    return `\n📚 Wörterbuch-Hinweise (verwende diese Wörter natürlich in deiner Antwort):\n${hints.join('\n')}\n`;
+  }
+  
+  return '';
+}
+
+// ============================================
+// 🎯 EINFACHE PATTERNS (NUR ALS LETZTER FALLBACK)
+// ============================================
+function getSimpleFallback(message: string): string | null {
+  const lower = message.toLowerCase();
   
   const patterns: { match: string[]; response: string }[] = [
-    { match: ['hallo', 'hi', 'hey', 'selam', 'ሰላም'], response: 'ሰላም' },
-    { match: ['wie geht', 'how are', 'kemey', 'ከመይ'], response: 'ከመይ ኣለካ?' },
-    { match: ['guten morgen', 'good morning', 'dehan', 'dehando'], response: 'ከመይ ሃዲርካ' },
-    { match: ['danke', 'thank', 'yekenyeley', 'የቐንየለይ'], response: 'የቐንየለይ' },
-    { match: ['tschüss', 'bye', 'dehan kun', 'ደሓን ኩን'], response: 'ደሓን ኩን' },
-    { match: ['gute nacht', 'good night', 'lejti', 'ለይቲ'], response: 'ለይቲ ሆንካ' },
+    { match: ['hallo', 'hi', 'hey', 'selam'], response: 'ሰላም' },
+    { match: ['guten morgen', 'good morning'], response: 'ከመይ ሓዲርካ? ከመይ ክሕግዘካ ይኽእል?' },
+    { match: ['guten abend', 'good evening'], response: 'ከመይ ኣምሲኻ?' },
+    { match: ['gute nacht', 'good night'], response: 'ጽቡቕ ለይቲ!' },
+    { match: ['wie geht', 'how are'], response: 'ከመይ ኣለካ?' },
+    { match: ['danke', 'thank'], response: 'የቐንየለይ' },
+    { match: ['tschüss', 'bye'], response: 'ደሓን ኩን' },
   ];
+  
+  const nameMatch = lower.match(/ich heiße (\w+)/);
+  if (nameMatch) {
+    return `ስመይ ${nameMatch[1]} እዩ። ከመይ ክሕግዘካ ይኽእል?`;
+  }
   
   for (const p of patterns) {
     if (p.match.some(m => lower.includes(m))) {
-      console.log('🎯 Pattern Match:', p.match[0]);
       return p.response;
     }
   }
@@ -104,17 +106,14 @@ function getPatternMatch(message: string): string | null {
 }
 
 // ============================================
-// 🤖 KI NUR FÜR DEUTSCH/ENGLISCH/CODE
+// 🤖 KI
 // ============================================
-async function askAI(messages: any[], targetLang: Lang) {
-  const maxTokens = targetLang === 'code' ? 500 : 150;
-  const temperature = targetLang === 'code' ? 0.7 : 0.5;
-  
+async function askAI(messages: any[], temperature: number = 0.5) {
   try {
     const res = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages,
-      max_tokens: maxTokens,
+      max_tokens: 200,
       temperature,
     });
     const text = res.choices?.[0]?.message?.content?.trim() ?? '';
@@ -127,7 +126,7 @@ async function askAI(messages: any[], targetLang: Lang) {
     const res = await deepseek.chat.completions.create({
       model: 'deepseek-chat',
       messages,
-      max_tokens: maxTokens,
+      max_tokens: 200,
       temperature,
     });
     return res.choices?.[0]?.message?.content?.trim() ?? '';
@@ -146,78 +145,116 @@ export async function POST(req: Request) {
     const { message, history = [], userId } = await req.json();
     const supabase = await createClient();
     
-    console.log('📝 User Nachricht:', message);
+    console.log('📝 User:', message);
     
-    // ============================================
-    // 1. 🔥 TIGRINYA: NUR DATENBANK + PATTERN MATCHING
-    // ============================================
-    const wantsTigrinya = 
-      detectLanguage(message) === 'ti' ||
-      message.toLowerCase().includes('tigrinya') ||
-      message.toLowerCase().includes('übersetze');
+    const isTi = wantsTigrinya(message);
+    const targetLang = isTi ? 'ti' : detectLanguage(message);
     
-    if (wantsTigrinya) {
-      console.log('🔍 Suche in Wörterbuch (5000 Wörter)...');
-      
-      // Zuerst Wörterbuch (deine 5000 Wörter!)
-      const dbWord = await searchDatabase(supabase, message);
-      if (dbWord) {
-        console.log('✅ Wörterbuch Treffer!');
-        return NextResponse.json({ 
-          response: dbWord, 
-          source: 'dictionary',
-          detectedLang: 'ti'
+    // 💎 Premium Check
+    if (userId) {
+      const { isPremium, remaining } = await checkPremium(userId);
+      if (!isPremium && remaining <= 0) {
+        return NextResponse.json({
+          response: `💎 Limit erreicht. Upgrade für unbegrenzt.`,
         });
       }
-      
-      // Dann Pattern Matching
-      const pattern = getPatternMatch(message);
-      if (pattern) {
-        console.log('✅ Pattern Match!');
-        return NextResponse.json({ 
-          response: pattern, 
-          source: 'pattern',
-          detectedLang: 'ti'
-        });
-      }
-      
-      // Wenn nichts gefunden -> Fallback
-      console.log('❌ Kein Treffer im Wörterbuch');
-      return NextResponse.json({ 
-        response: 'ኣይፈልጥን — Das Wort habe ich noch nicht in meinem Wörterbuch.',
-        source: 'notfound',
-        detectedLang: 'ti'
-      });
     }
     
     // ============================================
-    // 2. 🇩🇪🇬🇧 DEUTSCH/ENGLISCH/CODE: NUR KI
+    // 1. 🔥 KI ZUERST
     // ============================================
-    const targetLang = detectLanguage(message);
-    const langMap = { de: 'Deutsch', en: 'Englisch', code: 'Programmierung' };
     
-    const systemPrompt = targetLang === 'code'
-      ? `Du bist ein Programmier-Assistent. Antworte auf Deutsch oder Englisch. Gib klaren Code.`
-      : `Du bist ein hilfsbereiter Assistent. Antworte auf ${langMap[targetLang]}. Sei kurz und präzise.`;
+    // System Prompt (ELITE LEVEL mit Beispielen)
+    const systemPrompt = isTi
+      ? `Du bist ein Muttersprachler für Tigrinya.
+
+Regeln:
+- Antworte NUR auf Tigrinya
+- Schreibe natürliche, grammatikalisch korrekte Sätze
+- KEINE erfundenen Wörter
+- KEIN Amharisch
+- Antworte wie ein Mensch, nicht wie ein Übersetzer
+
+Wenn der User Deutsch schreibt:
+→ Übersetze sinnvoll ins Tigrinya (nicht Wort für Wort)
+
+Beispiele:
+Deutsch: Guten Morgen
+Tigrinya: ከመይ ሓዲርካ? ከመይ ክሕግዘካ ይኽእል?
+
+Deutsch: Ich bin eine Frau
+Tigrinya: ኣነ ሰበይቲ እየ።
+
+Deutsch: Danke
+Tigrinya: የቐንየለይ
+
+Deutsch: Tschüss
+Tigrinya: ደሓን ኩን`
+      : targetLang === 'en'
+      ? `You are a helpful assistant. Answer in English. Be concise and helpful.`
+      : `Du bist ein hilfsbereiter Assistent. Antworte auf Deutsch. Sei kurz und präzise.`;
+    
+    // Hole Dictionary-Hinweise (SEPARAT, nicht im System Prompt)
+    const dictionaryHint = await getDictionaryHint(supabase, message);
     
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...history.slice(-4),
-      { role: 'user', content: message },
     ];
     
-    let response = await askAI(messages, targetLang);
-    
-    if (!response) {
-      response = targetLang === 'en' 
-        ? "I don't know that yet — still learning." 
-        : "Das weiß ich noch nicht — ich lerne dazu.";
+    // Dictionary-Hinweise als separate System-Nachricht (nur für Tigrinya)
+    if (isTi && dictionaryHint) {
+      messages.push({ role: 'system', content: dictionaryHint });
     }
+    
+    messages.push(
+      ...history.slice(-4),
+      { role: 'user', content: message }
+    );
+    
+    let response = await askAI(messages, 0.5);
+    let source = 'ai';
+    
+    // ============================================
+    // 2. 🔧 QUALITÄTSFILTER + FALLBACK
+    // ============================================
+    
+    // Für Tigrinya: Qualitätscheck
+    if (isTi && !isGoodTigrinya(response)) {
+      console.log('⚠️ Qualitätsfilter schlug an, verwende Fallback');
+      response = null;
+    }
+    
+    // Fallback, wenn KI nichts lieferte oder Filter anschlug
+    if (!response || response.length < 2) {
+      const fallback = getSimpleFallback(message);
+      
+      if (fallback) {
+        response = fallback;
+        source = 'fallback';
+      } else {
+        response = isTi
+          ? 'ኣይፈልጥን — ገና እማሃር ኣለኹ።'
+          : targetLang === 'en'
+          ? "I don't know that yet — still learning."
+          : "Das weiß ich noch nicht — ich lerne dazu.";
+        source = 'default';
+      }
+    }
+    
+    // ============================================
+    // 3. 📊 LIMIT erhöhen
+    // ============================================
+    if (userId) {
+      const { isPremium } = await checkPremium(userId);
+      if (!isPremium) await incrementUsage(userId, false);
+    }
+    
+    console.log('✅ Antwort:', response);
     
     return NextResponse.json({ 
       response, 
-      source: 'ai',
-      detectedLang: targetLang
+      source,
+      detectedLang: isTi ? 'ti' : targetLang
     });
     
   } catch (error) {
