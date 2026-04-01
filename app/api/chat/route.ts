@@ -221,7 +221,7 @@ Tigrinya: ደሓን ኩን`
     // Für Tigrinya: Qualitätscheck
     if (isTi && !isGoodTigrinya(response)) {
       console.log('⚠️ Qualitätsfilter schlug an, verwende Fallback');
-      response = null;
+      response = '';
     }
     
     // Fallback, wenn KI nichts lieferte oder Filter anschlug
