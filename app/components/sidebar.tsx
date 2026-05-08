@@ -1,8 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 
 type Lang = 'de' | 'ti' | 'am' | 'en';
@@ -24,11 +23,9 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ user, profile, premium, chatHistory }: SidebarProps) {
-  const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
-  const [isOpen, setIsOpen] = useState(true);
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showLanguageMenu, setShowLanguageMenu] = useState(false);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -42,153 +39,128 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
     router.refresh();
   }
 
+  const getLanguageLabel = (lang: Lang): string => {
+    const labels: Record<Lang, string> = {
+      de: '🇩🇪 Deutsch',
+      en: '🇬🇧 English',
+      ti: '🇪🇷 ትግርኛ',
+      am: '🇪🇹 አማርኛ'
+    };
+    return labels[lang];
+  };
+
   return (
-    <>
-      {/* Mobile Toggle */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-white rounded-lg shadow"
-      >
-        {isOpen ? '✕' : '☰'}
-      </button>
+    <div className="w-80 bg-gray-800 flex flex-col h-full">
+      {/* Sidebar Header */}
+      <div className="p-4 border-b border-gray-700">
+        <h2 className="text-white font-semibold text-lg">Meine Chats</h2>
+      </div>
 
-      {/* Sidebar */}
-      <aside className={`
-        fixed left-0 top-0 h-full w-80 bg-gray-900 text-white flex flex-col
-        transition-transform duration-300 z-40
-        ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-      `}>
-        {/* Header */}
-        <div className="p-4 border-b border-gray-700">
-          <h1 className="text-xl font-bold">HABESHA AI</h1>
-          <p className="text-xs text-gray-400">von Massawa Software</p>
-        </div>
-
-        {/* New Chat Button */}
+      {/* New Chat Button */}
+      <div className="p-4">
         <button
           onClick={() => router.push('/')}
-          className="mx-4 mt-4 p-3 bg-blue-600 rounded-lg hover:bg-blue-700 transition"
+          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl transition-colors text-sm font-medium"
         >
           + Neuer Chat
         </button>
+      </div>
 
-        {/* Chat History */}
-        <div className="flex-1 overflow-y-auto mt-4 px-2 space-y-1">
-          <p className="text-xs text-gray-400 px-2 mb-2">RECENT CHATS</p>
-          {chatHistory.map((chat) => (
-            <Link
-              key={chat.id}
-              href={`/chat/${chat.id}`}
-              className={`
-                block p-2 rounded-lg text-sm transition truncate
-                ${pathname === `/chat/${chat.id}` 
-                  ? 'bg-gray-800' 
-                  : 'hover:bg-gray-800'
-                }
-              `}
-            >
-              {chat.title || 'Neues Gespräch'}
-              <span className="text-xs text-gray-500 block">
-                {new Date(chat.created_at).toLocaleDateString()}
-              </span>
-            </Link>
-          ))}
-        </div>
-
-        {/* ============================================ */}
-        {/* PROFIL SECTION (UNTEN) - Wie ChatGPT/DeepSeek */}
-        {/* ============================================ */}
-        <div className="border-t border-gray-700 p-4 space-y-3">
-          {/* User Email & Name */}
-          <button
-            onClick={() => setShowProfileMenu(!showProfileMenu)}
-            className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-gray-800 transition"
+      {/* Chat History List */}
+      <div className="flex-1 overflow-y-auto px-3 space-y-1">
+        {chatHistory.length === 0 && (
+          <p className="text-gray-500 text-xs text-center mt-4">Noch keine Chats</p>
+        )}
+        {chatHistory.map((conv) => (
+          <div
+            key={conv.id}
+            className={`p-3 rounded-xl cursor-pointer hover:bg-gray-700/50 transition-all`}
+            onClick={() => router.push(`/chat/${conv.id}`)}
           >
-            <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
-              👤
-            </div>
-            <div className="flex-1 text-left truncate">
-              <p className="text-sm font-medium truncate">
-                {user.full_name || user.email?.split('@')[0] || 'User'}
-              </p>
-              <p className="text-xs text-gray-400 truncate">{user.email}</p>
-            </div>
-            <span className="text-gray-400">▼</span>
-          </button>
+            <span className="text-sm font-medium text-white block truncate">
+              {conv.title}
+            </span>
+            <span className="text-xs text-gray-400">
+              {new Date(conv.created_at).toLocaleDateString()}
+            </span>
+          </div>
+        ))}
+      </div>
 
-          {/* Dropdown Menu */}
-          {showProfileMenu && (
-            <div className="space-y-2 pl-3 border-l-2 border-gray-700">
-              {/* Abo Status */}
-              <div className="p-2 rounded-lg bg-gray-800">
-                {premium.isPremium ? (
-                  <div className="flex items-center gap-2 text-green-400">
-                    <span>💎</span>
-                    <span className="text-sm">Premium Aktiv</span>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span>📊 Free</span>
-                      <span className="text-yellow-400">{premium.remaining}/10 heute</span>
-                    </div>
-                    <button
-                      onClick={() => router.push('/pricing')}
-                      className="w-full p-2 bg-gradient-to-r from-yellow-600 to-yellow-500 rounded-lg text-sm font-semibold"
-                    >
-                      💎 Upgrade auf Premium
-                    </button>
-                  </div>
-                )}
-              </div>
+      {/* PROFIL BEREICH - UNTEN */}
+      <div className="border-t border-gray-700 mt-auto">
+        <button
+          onClick={() => setShowLanguageMenu(!showLanguageMenu)}
+          className="w-full p-4 flex items-center gap-3 hover:bg-gray-700/50 transition-colors"
+        >
+          <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-full flex items-center justify-center text-white font-semibold">
+            {user.email?.[0]?.toUpperCase() || 'U'}
+          </div>
+          <div className="flex-1 text-left">
+            <p className="text-white text-sm font-medium truncate">
+              {user.full_name || user.email?.split('@')[0] || 'User'}
+            </p>
+            <p className="text-gray-400 text-xs truncate">{user.email}</p>
+          </div>
+          <span className="text-gray-400 text-xs">▼</span>
+        </button>
 
-              {/* Sprache (Hard Lock) */}
-              <div className="p-2">
-                <p className="text-xs text-gray-400 mb-2">🌍 Sprache</p>
-                <div className="space-y-1">
-                  {([
-                    ['de', '🇩🇪 Deutsch'],
-                    ['en', '🇬🇧 English'],
-                    ['ti', '🇪🇷 ትግርኛ'],
-                    ['am', '🇪🇹 አማርኛ'],
-                  ] as [Lang, string][]).map(([code, label]) => (
-                    <button
-                      key={code}
-                      onClick={() => updateLanguage(code)}
-                      className={`
-                        w-full text-left p-2 rounded-lg text-sm transition
-                        ${profile.preferred_language === code 
-                          ? 'bg-blue-600' 
-                          : 'hover:bg-gray-800'
-                        }
-                      `}
-                    >
-                      {label}
-                    </button>
-                  ))}
+        {showLanguageMenu && (
+          <div className="px-3 pb-3 space-y-2">
+            {/* Premium Status */}
+            <div className="p-3 rounded-xl bg-gray-700/50">
+              {premium.isPremium ? (
+                <div className="flex items-center gap-2 text-emerald-400">
+                  <span>💎</span>
+                  <div>
+                    <p className="text-sm font-medium">Premium Aktiv</p>
+                    <p className="text-xs text-gray-400">Unbegrenzte Nutzung</p>
+                  </div>
                 </div>
-              </div>
-
-              {/* Logout */}
-              <button
-                onClick={handleLogout}
-                className="w-full flex items-center gap-2 p-2 rounded-lg text-red-400 hover:bg-gray-800 transition"
-              >
-                <span>🚪</span>
-                <span>Abmelden</span>
-              </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">Verbleibend: {premium.remaining}/10</span>
+                  </div>
+                  <button
+                    onClick={() => router.push('/pricing')}
+                    className="w-full py-2 bg-gradient-to-r from-yellow-600 to-yellow-500 rounded-lg text-sm font-semibold"
+                  >
+                    💎 Premium Upgrade
+                  </button>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </aside>
 
-      {/* Overlay für Mobile */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-30 lg:hidden"
-          onClick={() => setIsOpen(false)}
-        />
-      )}
-    </>
+            {/* Language Selection */}
+            <div className="p-2">
+              <p className="text-xs text-gray-400 mb-2 px-2">🌍 Sprache</p>
+              {(['de', 'en', 'ti', 'am'] as Lang[]).map((code) => (
+                <button
+                  key={code}
+                  onClick={() => updateLanguage(code)}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${
+                    profile.preferred_language === code 
+                      ? 'bg-emerald-600 text-white' 
+                      : 'hover:bg-gray-700 text-gray-300'
+                  }`}
+                >
+                  {getLanguageLabel(code)}
+                  {profile.preferred_language === code && <span className="float-right">✓</span>}
+                </button>
+              ))}
+            </div>
+
+            {/* Logout Button */}
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-red-400 hover:bg-red-900/30 transition-colors text-sm"
+            >
+              <span>🚪</span> Abmelden
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
