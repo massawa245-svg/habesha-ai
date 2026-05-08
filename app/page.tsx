@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import Sidebar from '@/components/sidebar';
+import Sidebar from '@/app/components/sidebar';
 
 type Message = {
   role: 'user' | 'assistant';
