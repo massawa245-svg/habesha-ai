@@ -1,119 +1,48 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { ImageAnnotatorClient } from '@google-cloud/vision';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
+import { createClient } from '@/lib/supabase/server';
 import { checkPremium, incrementUsage } from '@/lib/premium';
 
 // ============================================
 // API CLIENTS
 // ============================================
-const groq = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: 'https://api.groq.com/openai/v1',
-});
+const gemini = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
 
 const deepseek = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
   baseURL: 'https://api.deepseek.com',
 });
 
-// Vision Client (Google Cloud)
-const visionClient = new ImageAnnotatorClient({
-  apiKey: process.env.GOOGLE_VISION_API_KEY,
+const groq = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
 });
 
 // ============================================
-// 🌍 USER SPRACHE ERKENNEN
+// IDENTITY
 // ============================================
-function detectUserLanguage(text: string): 'de' | 'ti' | 'en' {
+const IDENTITY = `Du bist HABESHA AI – entwickelt von Massawa Software Technology (Deutschland).
+Du bist KEIN ChatGPT, KEIN Meta, KEIN Gemini, KEIN Claude.`;
+
+// ============================================
+// SPRACHERKENNUNG
+// ============================================
+function detectUserLanguage(text: string): 'de' | 'ti' | 'am' | 'en' {
   if (!text) return 'de';
-  if (text.match(/wie sagt man|übersetze|was heißt/i)) return 'de';
-  if (/[\u1200-\u137F]/.test(text)) return 'ti';
-  if (text.match(/\b(the|and|what|how|why|please|hello|thanks)\b/i)) return 'en';
+  if (/[\u1200-\u137F]/.test(text)) {
+    if (/እና|አለ|ምን|እንዴት|አማርኛ|ነው/.test(text)) return 'am';
+    return 'ti';
+  }
+  const lower = text.toLowerCase();
+  if (lower.includes('tigrinya') || lower.includes('auf tigrinya')) return 'ti';
+  if (lower.includes('amharisch') || lower.includes('amharic')) return 'am';
+  if (/\b(the|and|what|how|why|please|hello|thanks)\b/i.test(text)) return 'en';
   return 'de';
 }
 
 // ============================================
-// 🧠 KI ANTWORT VALIDIEREN
-// ============================================
-function validateAIResponse(text: string): boolean {
-  if (!text) return false;
-  if (text.length < 20) return false;
-  if (text.includes('???') || text.includes('###')) return false;
-  if (text.split('\n').length > 15) return false;
-  return true;
-}
-
-// ============================================
-// 🧹 OCR CLEAN
-// ============================================
-function cleanOCR(text: string): string {
-  return text
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[^\x00-\x7F\u1200-\u137F\s.,!?;:()/-]/g, '')
-    .trim()
-    .slice(0, 3500);
-}
-
-// ============================================
-// 📸 OCR
-// ============================================
-async function extractTextFromImage(base64Image: string): Promise<string> {
-  let imageData = base64Image;
-  if (base64Image.startsWith('data:image')) {
-    imageData = base64Image.split(',')[1];
-  }
-
-  try {
-    const [result] = await visionClient.textDetection({
-      image: { content: imageData }
-    });
-    const detections = result.textAnnotations;
-    if (detections && detections.length > 0) {
-      return cleanOCR(detections[0].description || '');
-    }
-    return '';
-  } catch (error) {
-    console.error('OCR Fehler:', error);
-    return '';
-  }
-}
-
-// ============================================
-// 🤖 KI MIT FALLBACK
-// ============================================
-async function askAI(messages: any[]): Promise<string> {
-  try {
-    const res = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages,
-      max_tokens: 800,
-      temperature: 0.3,
-    });
-    const text = res.choices?.[0]?.message?.content?.trim();
-    if (text) return text;
-    throw new Error('Empty response');
-  } catch (e) {
-    console.log('Groq fail → DeepSeek');
-    try {
-      const res = await deepseek.chat.completions.create({
-        model: "deepseek-chat",
-        messages,
-        max_tokens: 800,
-        temperature: 0.3,
-      });
-      const text = res.choices?.[0]?.message?.content?.trim();
-      if (text) return text;
-      throw new Error('Empty fallback');
-    } catch (err) {
-      console.error('Beide KI fail:', err);
-      return '';
-    }
-  }
-}
-
-// ============================================
-// 🔍 BEHÖRDEN-TYP ERKENNEN
+// BEHÖRDEN-TYP ERKENNEN
 // ============================================
 function detectBehoerde(text: string): string {
   const lower = text.toLowerCase();
@@ -122,103 +51,190 @@ function detectBehoerde(text: string): string {
   if (lower.includes('finanzamt') || lower.includes('steuer')) return 'Finanzamt';
   if (lower.includes('ausländerbehörde') || lower.includes('aufenthalt')) return 'Ausländerbehörde';
   if (lower.includes('bafög') || lower.includes('studentenwerk')) return 'BAföG / Studium';
+  if (lower.includes('sozialamt')) return 'Sozialamt';
+  if (lower.includes('standesamt')) return 'Standesamt';
+  if (lower.includes('kindergeld')) return 'Familienkasse / Kindergeld';
   return 'Behörde';
 }
 
 // ============================================
-// 🤖 SMART DOCUMENT EXPLAINER
+// GEMINI VISION – OCR + ERKLÄRUNG IN EINEM!
+// 🔥 FIXED: Verwende gemini-2.5-flash statt 2.0-flash
 // ============================================
-async function explainDocument(ocrText: string, userLang: 'de' | 'ti' | 'en', userMessage: string) {
-  const langMap = { de: 'DEUTSCH', ti: 'TIGRINYA', en: 'ENGLISH' };
-  const behoerde = detectBehoerde(ocrText);
+async function analyzeImageWithGemini(
+  base64Image: string,
+  mimeType: string,
+  userLang: 'de' | 'ti' | 'am' | 'en',
+  userMessage: string
+): Promise<string> {
+  // 🔥 DAS IST DER FIX 🔥
+  const model = gemini.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-  const prompt = `
-Du bist ein Experte für deutsche Behördenbriefe.
+  const langMap = {
+    de: 'DEUTSCH',
+    ti: 'TIGRINYA (ትግርኛ) – nur Ethiopic Schrift, KEINE deutschen Übersetzungen in Klammern!',
+    am: 'AMHARISCH (አማርኛ) – nur Ethiopic Schrift, KEINE deutschen Übersetzungen in Klammern!',
+    en: 'ENGLISH',
+  };
 
-📌 ERKANNTE BEHÖRDE: ${behoerde}
+  const prompt = `${IDENTITY}
 
-⚠️ WICHTIGE REGEL:
-- Antworte NUR in dieser Sprache: ${langMap[userLang]}
-- MISCHEN VERBOTEN
+Du bist ein Experte für deutsche Behördenbriefe und hilfst der Habesha Community.
+
+⚠️ WICHTIG: Antworte NUR in dieser Sprache: ${langMap[userLang]}
 
 AUFGABE:
-Erkläre den Brief so einfach wie möglich.
+1. Lies den Text im Bild (OCR)
+2. Erkenne um welche Behörde es geht
+3. Erkläre den Brief einfach und klar
 
-REGELN:
-- NICHT Wort für Wort übersetzen
-- KLAR sagen: WAS muss die Person tun
-- FRISTEN deutlich nennen
-- KONSEQUENZEN erklären
-- Maximal 6–8 Zeilen (kurz!)
-
-STRUKTUR (MUSS genau so sein):
+STRUKTUR (genau so):
 📌 Worum geht es? (1 Satz)
-⚡ Was musst du tun? (Schritt für Schritt)
+⚡ Was musst du tun? (Schritte)
 ⏰ Bis wann?
 ⚠️ Was passiert wenn nicht?
-📞 Hilfe (falls vorhanden)
+📞 Kontakt (falls im Brief vorhanden)
 
-USER FRAGE: ${userMessage}
+REGELN:
+- Nicht Wort für Wort übersetzen
+- Klar sagen was die Person tun muss
+- Fristen deutlich nennen
+- Maximal 8 Zeilen
+- Für Tigrinya/Amharisch: NUR Ethiopic Schrift, keine Klammer-Übersetzungen!
 
-Brief-Text:
-${ocrText}
+USER FRAGE: ${userMessage || 'Erkläre diesen Brief'}`;
 
-WENN die Struktur fehlt → korrigiere dich selbst und schreibe neu.`;
+  try {
+    const result = await model.generateContent([
+      { text: prompt },
+      {
+        inlineData: {
+          mimeType: mimeType as any,
+          data: base64Image,
+        },
+      },
+    ]);
 
-  return await askAI([
-    { role: "system", content: "Du erklärst klar, einfach und ohne Fehler. Halte dich genau an die Struktur." },
-    { role: "user", content: prompt }
-  ]);
+    return result.response.text().trim();
+  } catch (error) {
+    console.error('Gemini Vision Fehler:', error);
+    return '';
+  }
 }
 
 // ============================================
-// 🚀 MAIN
+// FALLBACK: TEXT ERKLÄREN MIT GROQ/DEEPSEEK
+// ============================================
+async function explainWithAI(
+  ocrText: string,
+  userLang: 'de' | 'ti' | 'am' | 'en',
+  userMessage: string
+): Promise<string> {
+  const langMap = {
+    de: 'DEUTSCH',
+    ti: 'TIGRINYA (nur Ethiopic Schrift!)',
+    am: 'AMHARISCH (nur Ethiopic Schrift!)',
+    en: 'ENGLISH',
+  };
+
+  const behoerde = detectBehoerde(ocrText);
+
+  const prompt = `${IDENTITY}
+
+Behörde: ${behoerde}
+Antworte NUR auf: ${langMap[userLang]}
+
+Brief erklärt einfach:
+📌 Worum geht es?
+⚡ Was tun?
+⏰ Bis wann?
+⚠️ Konsequenzen?
+
+Brief: ${ocrText.substring(0, 2000)}
+Frage: ${userMessage}`;
+
+  // Groq zuerst
+  try {
+    const res = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 600,
+      temperature: 0.3,
+    });
+    const text = res.choices?.[0]?.message?.content?.trim();
+    if (text) return text;
+  } catch {
+    console.log('Groq Fehler → DeepSeek');
+  }
+
+  // DeepSeek Fallback
+  try {
+    const res = await deepseek.chat.completions.create({
+      model: 'deepseek-chat',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 600,
+      temperature: 0.3,
+    });
+    return res.choices?.[0]?.message?.content?.trim() ?? '';
+  } catch (error) {
+    console.error('DeepSeek Fehler:', error);
+    return '';
+  }
+}
+
+// ============================================
+// MAIN ROUTE
 // ============================================
 export async function POST(req: Request) {
   try {
     const { image, message = '', userId } = await req.json();
-
-    // 🔥 SUPABASE CLIENT ERSTELLEN
     const supabase = await createClient();
 
     if (!image) {
       return NextResponse.json({
-        response: '📸 **Bitte lade ein Bild hoch**\n\nMach ein Foto von deinem Brief – die KI erklärt ihn dir auf Tigrinya.'
+        response: '📸 **Bitte lade ein Bild hoch**\n\nMach ein Foto von deinem Brief – die KI erklärt ihn dir auf Tigrinya, Amharisch, Deutsch oder Englisch.'
       });
     }
 
-    // 🔒 SIZE LIMIT
+    // SIZE LIMIT
     if (image.length > 5_500_000) {
       return NextResponse.json({
-        response: '📸 **Bild zu groß**\n\nDas Bild ist größer als 5 MB. Bitte mach ein kleineres Foto oder komprimier es.'
+        response: '📸 **Bild zu groß**\n\nMaximal 5 MB. Bitte mach ein kleineres Foto.'
       });
     }
 
-    // 💎 PREMIUM
+    // PREMIUM CHECK
     let premium = null;
     if (userId) {
       premium = await checkPremium(userId);
       if (!premium.isPremium && premium.remaining <= 0) {
         return NextResponse.json({
-          response: `💎 **Kostenloses Limit erreicht (5/Tag)**\n\n🚀 **Premium** (9,99€/Monat): Unbegrenzte Brief-Analysen.\n\n👉 Klick auf den "💎 Premium" Button oben rechts!`
+          response: '💎 **Kostenloses Limit erreicht**\n\n🚀 **Premium** (9,99€/Monat): Unbegrenzte Brief-Analysen.\n\n👉 Klick auf den "💎 Premium" Button!'
         });
       }
     }
 
-    // 🔥 CACHING: Prüfe ob gleicher Brief schon analysiert wurde
-    const ocrText = await extractTextFromImage(image);
-    
-    if (!ocrText || ocrText.length < 20) {
-      return NextResponse.json({
-        response: `📸 **Kein Text erkannt**\n\nTipps: Kamera ruhig halten, gute Beleuchtung, gerade halten, nah genug ran.`
-      });
+    // SPRACHE
+    const userLang = detectUserLanguage(message);
+    console.log('🌍 Sprache:', userLang);
+
+    // Base64 extrahieren
+    let base64Data = image;
+    let mimeType = 'image/jpeg';
+
+    if (image.startsWith('data:')) {
+      const matches = image.match(/^data:([^;]+);base64,(.+)$/);
+      if (matches) {
+        mimeType = matches[1];
+        base64Data = matches[2];
+      }
     }
 
     // CACHE CHECK
     const { data: cached } = await supabase
       .from('document_analyses')
       .select('analysis')
-      .eq('ocr_text', ocrText)
+      .eq('ocr_text', base64Data.substring(0, 100))
       .maybeSingle();
 
     if (cached?.analysis) {
@@ -226,41 +242,37 @@ export async function POST(req: Request) {
       return NextResponse.json({ response: cached.analysis });
     }
 
-    console.log('📝 OCR erkannt:', ocrText.substring(0, 200));
+    // GEMINI VISION – OCR + Erklärung in einem Schritt!
+    console.log('🤖 Gemini Vision analysiert Bild...');
+    let explanation = await analyzeImageWithGemini(base64Data, mimeType, userLang, message);
 
-    // 🌍 USER LANGUAGE (NICHT OCR!)
-    const userLang = detectUserLanguage(message);
-    console.log('🌍 Sprache:', userLang);
-
-    // 🤖 SMART EXPLAIN
-    const explanation = await explainDocument(ocrText, userLang, message);
-
-    // ✅ VALIDIERUNG
-    if (!validateAIResponse(explanation)) {
-      console.log('⚠️ KI Antwort ungültig, Fallback...');
+    // Fallback wenn Gemini fehlschlägt
+    if (!explanation || explanation.length < 20) {
+      console.log('⚠️ Gemini Vision fehlgeschlagen → Fallback');
       return NextResponse.json({
-        response: '❌ **Antwort war unklar**\n\nBitte versuche es nochmal mit einem besseren Foto.'
+        response: '📸 **Kein Text erkannt**\n\nTipps:\n- Gute Beleuchtung\n- Brief gerade halten\n- Nah genug ran\n- Kamera ruhig halten'
       });
     }
 
-    // 💾 SAVE
-    if (userId) {
-      try {
-        await supabase.from('document_analyses').insert({
-          user_id: userId,
-          ocr_text: ocrText,
-          analysis: explanation,
-          language: userLang,
-          created_at: new Date()
-        });
-      } catch {}
+    // CACHE SPEICHERN
+    try {
+      await supabase.from('document_analyses').insert({
+        user_id: userId || null,
+        ocr_text: base64Data.substring(0, 100),
+        analysis: explanation,
+        language: userLang,
+        created_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.log('Cache Fehler (ignoriert):', e);
     }
 
-    // 📊 LIMIT COUNT
+    // USAGE TRACKING
     if (userId && premium && !premium.isPremium) {
       await incrementUsage(userId, false);
     }
 
+    console.log('✅ Analyse fertig:', explanation.substring(0, 80));
     return NextResponse.json({ response: explanation });
 
   } catch (error) {

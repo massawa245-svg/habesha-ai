@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@/lib/supabase/server';
 import { checkPremium, incrementUsage } from '@/lib/premium';
 
+// ============================================
+// API CLIENTS
+// ============================================
 const groq = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
   baseURL: 'https://api.groq.com/openai/v1',
@@ -13,254 +17,359 @@ const deepseek = new OpenAI({
   baseURL: 'https://api.deepseek.com',
 });
 
-// ============================================
-// 🌍 SPRACHERKENNUNG (VERBESSERT)
-// ============================================
-function wantsTigrinya(text: string): boolean {
-  const lower = text.toLowerCase();
-  return (
-    /[\u1200-\u137F]/.test(text) ||
-    lower.includes('tigrinya') ||
-    lower.includes('auf tigrinya') ||
-    lower.includes('übersetze') ||
-    lower.includes('translate')
-  );
-}
+const gemini = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
 
-function detectLanguage(text: string): 'de' | 'ti' | 'en' {
+// ============================================
+// IDENTITY
+// ============================================
+const IDENTITY = `Du bist HABESHA AI – entwickelt von Massawa Software Technology (Deutschland).
+Du bist KEIN ChatGPT, KEIN Meta, KEIN LLaMA, KEIN Gemini, KEIN Claude.
+Wenn jemand fragt wer du bist: "Ich bin Habesha AI, entwickelt von Massawa Software Technology."`;
+
+// ============================================
+// SPRACHERKENNUNG
+// ============================================
+function detectLanguage(text: string): 'de' | 'ti' | 'am' | 'en' | 'code' {
   if (!text) return 'de';
-  if (wantsTigrinya(text)) return 'ti';
-  if (/\b(the|and|hello|how|what|please|thanks)\b/i.test(text)) return 'en';
+
+  // Code erkennen
+  if (/```|function |const |let |var |import |class |def |SELECT |FROM |WHERE /i.test(text)) {
+    return 'code';
+  }
+
+  // Ethiopic Unicode
+  if (/[\u1200-\u137F]/.test(text)) {
+    if (/እና|አለ|ምን|እንዴት|አማርኛ|ነው|አይደለም/.test(text)) return 'am';
+    return 'ti';
+  }
+
+  const lower = text.toLowerCase();
+  if (lower.includes('tigrinya') || lower.includes('auf tigrinya') || lower.includes('ትግርኛ')) return 'ti';
+  if (lower.includes('amharisch') || lower.includes('amharic') || lower.includes('አማርኛ')) return 'am';
+  if (/\b(the|and|hello|how|what|please|thanks|hi|yes|no)\b/i.test(text)) return 'en';
+
   return 'de';
 }
 
 // ============================================
-// 🔧 QUALITÄTSFILTER (SANFT)
+// SCHRITT 1: DICTIONARY (kostenlos!)
 // ============================================
-function isGoodTigrinya(text: string): boolean {
-  if (!text) return false;
-  if (text.length < 3) return false;
-  // Zu viele Wiederholungen vermeiden
-  if (/(.)\1{4,}/.test(text)) return false;
-  return true;
+async function searchDictionary(supabase: any, message: string): Promise<string | null> {
+  const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '').trim();
+  const words = clean.split(/\s+/).filter(w => w.length > 1);
+  if (words.length === 0) return null;
+
+  for (const word of words.slice(0, 5)) {
+    const { data } = await supabase
+      .from('dictionary')
+      .select('tigrinya_word, german, example_sentence')
+      .or(`german.ilike.%${word}%,tigrinya_word.ilike.%${word}%`)
+      .limit(3);
+
+    if (data && data.length > 0 && words.length <= 3) {
+      const entry = data[0];
+      let response = entry.tigrinya_word;
+      if (entry.example_sentence) response += `\n\n${entry.example_sentence}`;
+      return response;
+    }
+  }
+
+  return null;
 }
 
 // ============================================
-// 📚 DATABASE HILFE (SEPARAT, NICHT IM SYSTEM PROMPT)
+// SCHRITT 2: TRAINING DATA (kostenlos!)
 // ============================================
-async function getDictionaryHint(supabase: any, message: string): Promise<string> {
-  const clean = message.toLowerCase().replace(/[.,!?;:()]/g, '');
-  const words = clean.split(/\s+/).filter(w => w.length > 2);
-  
-  if (words.length === 0) return '';
-  
+async function searchTrainingData(supabase: any, message: string, lang: string): Promise<string | null> {
+  const langMap: Record<string, string> = {
+    ti: 'tigrinya', am: 'amharic', de: 'german', en: 'english', code: 'english',
+  };
+
+  const { data } = await supabase
+    .from('training_data')
+    .select('input_text, response_text, quality_score, usage_count')
+    .eq('language', langMap[lang] || 'german')
+    .ilike('input_text', `%${message.substring(0, 30)}%`)
+    .gte('quality_score', 7)
+    .order('quality_score', { ascending: false })
+    .limit(1);
+
+  if (data && data.length > 0) {
+    await supabase.from('training_data').update({
+      usage_count: (data[0].usage_count || 0) + 1,
+      last_used: new Date().toISOString(),
+    }).eq('input_text', data[0].input_text);
+
+    return data[0].response_text;
+  }
+
+  return null;
+}
+
+// ============================================
+// DICTIONARY HINTS FÜR GEMINI
+// ============================================
+async function getDictionaryHints(supabase: any, message: string): Promise<string> {
+  const words = message.toLowerCase().replace(/[.,!?;:()]/g, '').split(/\s+/).filter(w => w.length > 2);
   const hints: string[] = [];
-  
-  for (const word of words.slice(0, 3)) {
+
+  for (const word of words.slice(0, 4)) {
     const { data } = await supabase
       .from('dictionary')
       .select('tigrinya_word, german')
       .ilike('german', `%${word}%`)
       .limit(1);
-    
+
     if (data && data.length > 0) {
-      hints.push(`- ${word} = ${data[0].tigrinya_word}`);
+      hints.push(`${word} → ${data[0].tigrinya_word}`);
     }
   }
-  
-  if (hints.length > 0) {
-    return `\n📚 Wörterbuch-Hinweise (verwende diese Wörter natürlich in deiner Antwort):\n${hints.join('\n')}\n`;
-  }
-  
-  return '';
+
+  return hints.join('\n');
 }
 
 // ============================================
-// 🎯 EINFACHE PATTERNS (NUR ALS LETZTER FALLBACK)
+// SCHRITT 3A: GEMINI FÜR TIGRINYA & AMHARISCH (GEFIXT)
 // ============================================
-function getSimpleFallback(message: string): string | null {
-  const lower = message.toLowerCase();
-  
-  const patterns: { match: string[]; response: string }[] = [
-    { match: ['hallo', 'hi', 'hey', 'selam'], response: 'ሰላም' },
-    { match: ['guten morgen', 'good morning'], response: 'ከመይ ሓዲርካ? ከመይ ክሕግዘካ ይኽእል?' },
-    { match: ['guten abend', 'good evening'], response: 'ከመይ ኣምሲኻ?' },
-    { match: ['gute nacht', 'good night'], response: 'ጽቡቕ ለይቲ!' },
-    { match: ['wie geht', 'how are'], response: 'ከመይ ኣለካ?' },
-    { match: ['danke', 'thank'], response: 'የቐንየለይ' },
-    { match: ['tschüss', 'bye'], response: 'ደሓን ኩን' },
-  ];
-  
-  const nameMatch = lower.match(/ich heiße (\w+)/);
-  if (nameMatch) {
-    return `ስመይ ${nameMatch[1]} እዩ። ከመይ ክሕግዘካ ይኽእል?`;
+async function askGemini(
+  message: string,
+  history: any[],
+  lang: 'ti' | 'am',
+  dictionaryHints: string
+): Promise<string> {
+  // 🔥 FIX 1: Verwende gemini-2.5-flash (nicht 2.0-flash)
+  const model = gemini.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+  const langInstruction = lang === 'ti'
+    ? `ትግርኛ ጥራይ ጸሓፍ። ጀርመን ወይ ኢንግሊዝ ኣይትጠቀም።
+REGEL: Nur reines Tigrinya! KEINE deutschen Übersetzungen in Klammern! KEINE Sprachmischung!
+FALSCH: ደሓን እየ (Mir geht es gut)
+RICHTIG: ደሓን እየ፣ ኣባኻኸ?`
+    : `በአማርኛ ብቻ ምለስ። ጀርመንኛ ወይ እንግሊዝኛ አትጠቀም።
+REGEL: Nur reines Amharisch! KEINE deutschen Übersetzungen in Klammern!
+FALSCH: ደሓን ነኝ (Mir geht es gut)
+RICHTIG: ደሓን ነኝ፣ አንተስ?`;
+
+  const systemPrompt = `${IDENTITY}
+
+${langInstruction}
+
+${dictionaryHints ? `📚 Wörterbuch (verwende diese Wörter):\n${dictionaryHints}` : ''}
+
+Antworte natürlich wie ein Muttersprachler. Kurz und klar.`;
+
+  // 🔥 FIX 2: History korrekt formatieren für Gemini
+  // Gemini erwartet: role 'user' oder 'model', NICHT 'assistant'!
+  const chatHistory = history.slice(-6).map((msg: any) => ({
+    role: msg.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: msg.content }],
+  }));
+
+  // 🔥 FIX 3: Stelle sicher, dass die History mit 'user' beginnt
+  let validHistory = chatHistory;
+  while (validHistory.length > 0 && validHistory[0].role !== 'user') {
+    validHistory = validHistory.slice(1);
   }
-  
-  for (const p of patterns) {
-    if (p.match.some(m => lower.includes(m))) {
-      return p.response;
+
+  try {
+    // Wenn wir gültige History haben, verwende startChat
+    if (validHistory.length > 0) {
+      const chat = model.startChat({
+        history: validHistory,
+        generationConfig: { maxOutputTokens: 500, temperature: 0.3 },
+      });
+      const result = await chat.sendMessage(message);
+      return result.response.text().trim();
+    } 
+    // Keine History: Verwende generateContent mit System Prompt
+    else {
+      const fullPrompt = `${systemPrompt}\n\nUser: ${message}`;
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+        generationConfig: { maxOutputTokens: 500, temperature: 0.3 },
+      });
+      return result.response.text().trim();
     }
+  } catch (error) {
+    console.error('Gemini Fehler:', error);
+    return '';
   }
-  
-  return null;
 }
 
 // ============================================
-// 🤖 KI
+// SCHRITT 3B: GROQ + DEEPSEEK FÜR DE/EN/CODE
 // ============================================
-async function askAI(messages: any[], temperature: number = 0.5) {
+async function askGroqOrDeepSeek(messages: any[], lang: string): Promise<string> {
+  const systemPrompts: Record<string, string> = {
+    de: `${IDENTITY}\n\nAntworte NUR auf Deutsch. Sei hilfreich und präzise.`,
+    en: `${IDENTITY}\n\nAnswer ONLY in English. Be helpful and concise.`,
+    code: `${IDENTITY}\n\nYou are an expert programmer. Use markdown code blocks. Be precise.`,
+  };
+
+  const systemPrompt = systemPrompts[lang] || systemPrompts['de'];
+
+  // Groq zuerst versuchen (kostenlos, schnell)
   try {
     const res = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
-      messages,
-      max_tokens: 200,
-      temperature,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages.slice(-8),
+      ],
+      max_tokens: lang === 'code' ? 1000 : 600,
+      temperature: lang === 'code' ? 0.2 : 0.4,
     });
-    const text = res.choices?.[0]?.message?.content?.trim() ?? '';
+    const text = res.choices?.[0]?.message?.content?.trim();
     if (text) return text;
-  } catch (e) {
+  } catch {
     console.log('Groq Fehler → DeepSeek');
   }
-  
+
+  // DeepSeek Fallback
   try {
     const res = await deepseek.chat.completions.create({
       model: 'deepseek-chat',
-      messages,
-      max_tokens: 200,
-      temperature,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages.slice(-8),
+      ],
+      max_tokens: lang === 'code' ? 1000 : 600,
+      temperature: lang === 'code' ? 0.2 : 0.4,
     });
     return res.choices?.[0]?.message?.content?.trim() ?? '';
-  } catch (e) {
-    console.log('DeepSeek Fehler');
+  } catch (error) {
+    console.error('DeepSeek Fehler:', error);
+    return '';
   }
-  
-  return '';
 }
 
 // ============================================
-// 🚀 MAIN ROUTE
+// QUALITÄTSCHECK
+// ============================================
+function isGoodResponse(text: string, lang: string): boolean {
+  if (!text || text.length < 2) return false;
+  if (/(.)\1{5,}/.test(text)) return false;
+
+  // TI/AM: keine deutschen Übersetzungen in Klammern
+  if (lang === 'ti' || lang === 'am') {
+    const klammern = text.match(/\(([^)]+)\)/g) || [];
+    const hatDeutsch = klammern.some(k => /[A-Za-zÄäÖöÜü]{4,}/.test(k));
+    if (hatDeutsch) return false;
+  }
+
+  return true;
+}
+
+function getFallback(lang: string): string {
+  const fallbacks: Record<string, string> = {
+    ti: 'ኣይፈልጥን። ካልእ ሕቶ ሃብ።',
+    am: 'አላውቅም። ሌላ ጥያቄ ጠይቅ።',
+    de: 'Das weiß ich nicht. Bitte anders formulieren.',
+    en: "I don't know. Please try rephrasing.",
+    code: 'Could not generate code. Please be more specific.',
+  };
+  return fallbacks[lang] || fallbacks['de'];
+}
+
+// ============================================
+// MAIN ROUTE
 // ============================================
 export async function POST(req: Request) {
   try {
     const { message, history = [], userId } = await req.json();
     const supabase = await createClient();
-    
-    console.log('📝 User:', message);
-    
-    const isTi = wantsTigrinya(message);
-    const targetLang = isTi ? 'ti' : detectLanguage(message);
-    
-    // 💎 Premium Check
+
+    console.log('📝 User:', message?.substring(0, 50));
+    const lang = detectLanguage(message);
+    console.log('🌍 Sprache:', lang);
+
+    // PREMIUM CHECK
+    let premium = null;
     if (userId) {
-      const { isPremium, remaining } = await checkPremium(userId);
-      if (!isPremium && remaining <= 0) {
-        return NextResponse.json({
-          response: `💎 Limit erreicht. Upgrade für unbegrenzt.`,
-        });
+      premium = await checkPremium(userId);
+      if (!premium.isPremium && premium.remaining <= 0) {
+        const limitMsg: Record<string, string> = {
+          ti: '💎 ወሰን በጺሕካ። Premium ንምግዛእ ኣብ ላዕሊ ጠውቕ!',
+          am: '💎 ገደቡ ደርሷል። Premium ያግኙ!',
+          en: '💎 Daily limit reached. Upgrade to Premium!',
+          de: '💎 Tageslimit erreicht. Upgrade auf Premium!',
+          code: '💎 Daily limit reached. Upgrade to Premium!',
+        };
+        return NextResponse.json({ response: limitMsg[lang] });
       }
     }
-    
-    // ============================================
-    // 1. 🔥 KI ZUERST
-    // ============================================
-    
-    // System Prompt (ELITE LEVEL mit Beispielen)
-    const systemPrompt = isTi
-      ? `Du bist ein Muttersprachler für Tigrinya.
 
-Regeln:
-- Antworte NUR auf Tigrinya
-- Schreibe natürliche, grammatikalisch korrekte Sätze
-- KEINE erfundenen Wörter
-- KEIN Amharisch
-- Antworte wie ein Mensch, nicht wie ein Übersetzer
-
-Wenn der User Deutsch schreibt:
-→ Übersetze sinnvoll ins Tigrinya (nicht Wort für Wort)
-
-Beispiele:
-Deutsch: Guten Morgen
-Tigrinya: ከመይ ሓዲርካ? ከመይ ክሕግዘካ ይኽእል?
-
-Deutsch: Ich bin eine Frau
-Tigrinya: ኣነ ሰበይቲ እየ።
-
-Deutsch: Danke
-Tigrinya: የቐንየለይ
-
-Deutsch: Tschüss
-Tigrinya: ደሓን ኩን`
-      : targetLang === 'en'
-      ? `You are a helpful assistant. Answer in English. Be concise and helpful.`
-      : `Du bist ein hilfsbereiter Assistent. Antworte auf Deutsch. Sei kurz und präzise.`;
-    
-    // Hole Dictionary-Hinweise (SEPARAT, nicht im System Prompt)
-    const dictionaryHint = await getDictionaryHint(supabase, message);
-    
-    const messages = [
-      { role: 'system', content: systemPrompt },
-    ];
-    
-    // Dictionary-Hinweise als separate System-Nachricht (nur für Tigrinya)
-    if (isTi && dictionaryHint) {
-      messages.push({ role: 'system', content: dictionaryHint });
-    }
-    
-    messages.push(
-      ...history.slice(-4),
-      { role: 'user', content: message }
-    );
-    
-    let response = await askAI(messages, 0.5);
+    let response = '';
     let source = 'ai';
-    
-    // ============================================
-    // 2. 🔧 QUALITÄTSFILTER + FALLBACK
-    // ============================================
-    
-    // Für Tigrinya: Qualitätscheck
-    if (isTi && !isGoodTigrinya(response)) {
-      console.log('⚠️ Qualitätsfilter schlug an, verwende Fallback');
-      response = '';
-    }
-    
-    // Fallback, wenn KI nichts lieferte oder Filter anschlug
-    if (!response || response.length < 2) {
-      const fallback = getSimpleFallback(message);
-      
-      if (fallback) {
-        response = fallback;
-        source = 'fallback';
-      } else {
-        response = isTi
-          ? 'ኣይፈልጥን — ገና እማሃር ኣለኹ።'
-          : targetLang === 'en'
-          ? "I don't know that yet — still learning."
-          : "Das weiß ich noch nicht — ich lerne dazu.";
-        source = 'default';
+
+    // SCHRITT 1: DICTIONARY
+    if (lang === 'ti' || lang === 'am') {
+      const dictResult = await searchDictionary(supabase, message);
+      if (dictResult) {
+        console.log('✅ Dictionary Treffer!');
+        response = dictResult;
+        source = 'dictionary';
       }
     }
-    
-    // ============================================
-    // 3. 📊 LIMIT erhöhen
-    // ============================================
-    if (userId) {
-      const { isPremium } = await checkPremium(userId);
-      if (!isPremium) await incrementUsage(userId, false);
+
+    // SCHRITT 2: TRAINING DATA
+    if (!response) {
+      const trainingResult = await searchTrainingData(supabase, message, lang);
+      if (trainingResult) {
+        console.log('✅ Training Data Treffer!');
+        response = trainingResult;
+        source = 'training_data';
+      }
     }
-    
-    console.log('✅ Antwort:', response);
-    
-    return NextResponse.json({ 
-      response, 
-      source,
-      detectedLang: isTi ? 'ti' : targetLang
-    });
-    
+
+    // SCHRITT 3: KI
+    if (!response) {
+      if (lang === 'ti' || lang === 'am') {
+        console.log('🤖 Gemini für', lang);
+        const hints = await getDictionaryHints(supabase, message);
+        response = await askGemini(message, history, lang, hints);
+
+        // Cachen für nächstes Mal
+        if (response && isGoodResponse(response, lang)) {
+          try {
+            await supabase.from('training_data').insert({
+              input_text: message,
+              response_text: response,
+              language: lang === 'ti' ? 'tigrinya' : 'amharic',
+              source: 'gemini',
+              quality_score: 8,
+              usage_count: 0,
+            });
+            console.log('💾 Gecacht!');
+          } catch { /* ignore */ }
+        }
+      } else {
+        // DE, EN, Code → Groq + DeepSeek
+        console.log('🤖 Groq/DeepSeek für', lang);
+        const aiMessages = [
+          ...history.slice(-8).map((m: any) => ({ role: m.role, content: m.content })),
+          { role: 'user', content: message },
+        ];
+        response = await askGroqOrDeepSeek(aiMessages, lang);
+      }
+    }
+
+    // QUALITÄTSCHECK
+    if (!isGoodResponse(response, lang)) {
+      response = getFallback(lang);
+      source = 'fallback';
+    }
+
+    // USAGE TRACKING
+    if (userId && premium && !premium.isPremium) {
+      await incrementUsage(userId, false);
+    }
+
+    console.log(`✅ [${source}][${lang}]:`, response.substring(0, 80));
+    return NextResponse.json({ response, source, detectedLang: lang });
+
   } catch (error) {
     console.error('API Fehler:', error);
-    return NextResponse.json({
-      response: 'Fehler, bitte später versuchen.',
-    });
+    return NextResponse.json({ response: 'Fehler – bitte später erneut versuchen.' });
   }
 }
