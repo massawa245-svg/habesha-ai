@@ -26,7 +26,6 @@ export default function Home() {
   const [loading, setLoading] = useState<boolean>(false);
   const [mounted, setMounted] = useState<boolean>(false);
   const [user, setUser] = useState<any>(null);
-  const [userEmail, setUserEmail] = useState<string>('');
   const [userName, setUserName] = useState<string>('');
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -34,14 +33,20 @@ export default function Home() {
   const [authChecked, setAuthChecked] = useState<boolean>(false);
   const [userLanguage, setUserLanguage] = useState<Language>('de');
   const [isPremium, setIsPremium] = useState<boolean>(false);
-  const [remainingUploads, setRemainingUploads] = useState<number>(8);
+  const [remainingUploads] = useState<number>(8);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(30 * 60);
   const [limitReached, setLimitReached] = useState<boolean>(false);
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [showAttachMenu, setShowAttachMenu] = useState<boolean>(false);
+  const [uploadingFile, setUploadingFile] = useState<boolean>(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const initCalled = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
   const supabase = createClient();
 
   const addSystemMessage = useCallback((content: string) => {
@@ -49,48 +54,28 @@ export default function Home() {
   }, []);
 
   const loadUserProfile = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('full_name, preferred_language')
-      .eq('id', userId)
-      .single();
-    if (data) {
-      setUserName(data.full_name || '');
-      setUserLanguage((data.preferred_language as Language) || 'de');
-    }
+    const { data } = await supabase.from('profiles').select('full_name, preferred_language').eq('id', userId).single();
+    if (data) { setUserName(data.full_name || ''); setUserLanguage((data.preferred_language as Language) || 'de'); }
   }, [supabase]);
 
   const startChatTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       setRemainingSeconds(prev => {
-        if (prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          setLimitReached(true);
-          addSystemMessage('⏰ Deine 30 Minuten kostenlose Chat-Zeit sind abgelaufen.');
-          return 0;
-        }
+        if (prev <= 1) { if (timerRef.current) clearInterval(timerRef.current); setLimitReached(true); addSystemMessage('Deine 30 Minuten kostenlose Chat-Zeit sind abgelaufen.'); return 0; }
         return prev - 1;
       });
     }, 1000);
   }, [addSystemMessage]);
 
   const loadConversations = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from('conversations')
-      .select('*')
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false });
+    const { data } = await supabase.from('conversations').select('*').eq('user_id', userId).order('updated_at', { ascending: false });
     setConversations(data || []);
     return data || [];
   }, [supabase]);
 
   const loadMessages = useCallback(async (conversationId: string) => {
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true });
+    const { data } = await supabase.from('messages').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: true });
     setMessages(data || []);
     setCurrentConversationId(conversationId);
     localStorage.setItem('lastConversationId', conversationId);
@@ -98,18 +83,8 @@ export default function Home() {
   }, [supabase]);
 
   const startNewChat = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from('conversations')
-      .insert({ user_id: userId, title: 'Neues Gespräch' })
-      .select()
-      .single();
-    if (data) {
-      setCurrentConversationId(data.id);
-      setMessages([]);
-      localStorage.setItem('lastConversationId', data.id);
-      loadConversations(userId);
-      setSidebarOpen(false);
-    }
+    const { data } = await supabase.from('conversations').insert({ user_id: userId, title: 'Neues Gespräch' }).select().single();
+    if (data) { setCurrentConversationId(data.id); setMessages([]); localStorage.setItem('lastConversationId', data.id); loadConversations(userId); setSidebarOpen(false); }
   }, [supabase, loadConversations]);
 
   const updateChatTitle = useCallback(async (conversationId: string, userMessage: string) => {
@@ -117,196 +92,139 @@ export default function Home() {
     await supabase.from('conversations').update({ title }).eq('id', conversationId);
   }, [supabase]);
 
-  const handleLogout = useCallback(async () => {
-    await supabase.auth.signOut();
-    localStorage.removeItem('lastConversationId');
-    window.location.href = '/login';
-  }, [supabase]);
-
   useEffect(() => {
     setMounted(true);
     if (initCalled.current) return;
     initCalled.current = true;
-
     const initAuth = async () => {
       try {
-        const { data: { user: authenticatedUser }, error: userError } = await supabase.auth.getUser();
-        if (userError || !authenticatedUser) {
-          window.location.href = '/login';
-          return;
-        }
-        setUser(authenticatedUser);
-        setUserEmail(authenticatedUser.email || '');
-        await loadUserProfile(authenticatedUser.id);
-
-        const convList = await loadConversations(authenticatedUser.id);
+        const { data: { user: au }, error } = await supabase.auth.getUser();
+        if (error || !au) { window.location.href = '/login'; return; }
+        setUser(au);
+        await loadUserProfile(au.id);
+        const convList = await loadConversations(au.id);
         const lastId = localStorage.getItem('lastConversationId');
         const lastExists = convList.find((c: Conversation) => c.id === lastId);
-
-        if (lastId && lastExists) {
-          await loadMessages(lastId);
-        } else if (convList.length > 0) {
-          await loadMessages(convList[0].id);
-        } else {
-          await startNewChat(authenticatedUser.id);
-        }
-
-        const { data: trusted } = await supabase
-          .from('trusted_users')
-          .select('role')
-          .eq('user_id', authenticatedUser.id)
-          .maybeSingle();
-
+        if (lastId && lastExists) await loadMessages(lastId);
+        else if (convList.length > 0) await loadMessages(convList[0].id);
+        else await startNewChat(au.id);
+        const { data: trusted } = await supabase.from('trusted_users').select('role').eq('user_id', au.id).maybeSingle();
         setIsPremium(trusted?.role === 'premium' || trusted?.role === 'admin');
         startChatTimer();
         setAuthChecked(true);
-      } catch (err) {
-        console.error('Init Error:', err);
-        window.location.href = '/login';
-      }
+      } catch { window.location.href = '/login'; }
     };
-
     initAuth();
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) {
-        setUser(session.user);
-        setUserEmail(session.user.email || '');
-        loadUserProfile(session.user.id);
-        loadConversations(session.user.id);
-      }
-      if (event === 'SIGNED_OUT') {
-        setUser(null);
-        setUserEmail('');
-        localStorage.removeItem('lastConversationId');
-        window.location.href = '/login';
-      }
+      if (event === 'SIGNED_IN' && session) { setUser(session.user); loadUserProfile(session.user.id); loadConversations(session.user.id); }
+      if (event === 'SIGNED_OUT') { setUser(null); localStorage.removeItem('lastConversationId'); window.location.href = '/login'; }
     });
-
-    return () => {
-      subscription.unsubscribe();
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    return () => { subscription.unsubscribe(); if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const autoResize = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const textarea = e.target;
-    textarea.style.height = 'auto';
-    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+    const t = e.target; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px';
   }, []);
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || loading) return;
-    if (limitReached && !isPremium) {
-      alert('⛔ Limit erreicht! Bitte Premium buchen.');
-      return;
-    }
-
-    const userMessage: Message = { role: 'user', content: input };
+  const sendMessage = useCallback(async (textOverride?: string) => {
+    const text = textOverride ?? input;
+    if (!text.trim() || loading) return;
+    if (limitReached && !isPremium) { alert('Limit erreicht! Bitte Premium buchen.'); return; }
+    const userMessage: Message = { role: 'user', content: text };
     const newMessages = [...messages, userMessage];
-    const isFirstMessage = messages.length === 0;
-
-    setMessages(newMessages);
-    setInput('');
-    setLoading(true);
+    const isFirst = messages.length === 0;
+    setMessages(newMessages); setInput(''); setLoading(true);
     if (inputRef.current) inputRef.current.style.height = 'auto';
-
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: input,
-          history: newMessages.map(msg => ({ role: msg.role, content: msg.content })),
-          userId: user?.id,
-          conversationId: currentConversationId,
-          language: userLanguage,
-        }),
-      });
+      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, history: newMessages.map(m => ({ role: m.role, content: m.content })), userId: user?.id, conversationId: currentConversationId, language: userLanguage }) });
       const data = await res.json();
       setMessages([...newMessages, { role: 'assistant', content: data.response }]);
-      if (isFirstMessage && currentConversationId) {
-        await updateChatTitle(currentConversationId, input);
-      }
+      if (isFirst && currentConversationId) await updateChatTitle(currentConversationId, text);
       if (user) await loadConversations(user.id);
-    } catch {
-      setMessages([...newMessages, { role: 'assistant', content: 'Fehler aufgetreten.' }]);
-    } finally {
-      setLoading(false);
-    }
+    } catch { setMessages([...newMessages, { role: 'assistant', content: 'Fehler aufgetreten.' }]); }
+    finally { setLoading(false); }
   }, [input, loading, limitReached, isPremium, messages, user, currentConversationId, userLanguage]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   }, [sendMessage]);
 
-  const getLanguageLabel = (lang: Language): string => {
-    const labels: Record<Language, string> = {
-      de: '🇩🇪 Deutsch', en: '🇬🇧 English', ti: '🇪🇷 ትግርኛ', am: '🇪🇹 አማርኛ',
-    };
-    return labels[lang];
-  };
+  const toggleVoice = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { alert('Spracherkennung nicht verfügbar.'); return; }
+    if (isListening) { recognitionRef.current?.stop(); setIsListening(false); return; }
+    const rec = new SR();
+    rec.lang = userLanguage === 'de' ? 'de-DE' : userLanguage === 'en' ? 'en-US' : 'ti-ER';
+    rec.interimResults = false;
+    rec.onresult = (e: any) => setInput(prev => prev + e.results[0][0].transcript);
+    rec.onend = () => setIsListening(false);
+    rec.onerror = () => setIsListening(false);
+    recognitionRef.current = rec; rec.start(); setIsListening(true);
+  }, [isListening, userLanguage]);
 
-  if (!mounted || !authChecked) {
-    return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500 mx-auto mb-4"></div>
-          <p>Lade Habesha AI...</p>
-        </div>
+  const handleFileUpload = useCallback(async (file: File) => {
+    setShowAttachMenu(false); setUploadingFile(true);
+    try {
+      const fd = new FormData(); fd.append('file', file); fd.append('userId', user?.id || ''); fd.append('conversationId', currentConversationId || ''); fd.append('language', userLanguage);
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setMessages(prev => [...prev, { role: 'user', content: `📎 ${file.name}` }, { role: 'assistant', content: data.response || 'Datei verarbeitet.' }]);
+      if (user) await loadConversations(user.id);
+    } catch { addSystemMessage('Datei konnte nicht verarbeitet werden.'); }
+    finally { setUploadingFile(false); }
+  }, [user, currentConversationId, userLanguage, addSystemMessage, loadConversations]);
+
+  const handleImageUpload = useCallback(async (file: File) => {
+    setShowAttachMenu(false); setUploadingFile(true);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target?.result as string;
+      setMessages(prev => [...prev, { role: 'user', content: 'Bild gesendet', image: base64 }]);
+      try {
+        const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Beschreibe dieses Bild.', image: base64, userId: user?.id, conversationId: currentConversationId, language: userLanguage }) });
+        const data = await res.json();
+        setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
+        if (user) await loadConversations(user.id);
+      } catch { addSystemMessage('Bild konnte nicht verarbeitet werden.'); }
+      finally { setUploadingFile(false); }
+    };
+    reader.readAsDataURL(file);
+  }, [user, currentConversationId, userLanguage, addSystemMessage, loadConversations]);
+
+  const getLangLabel = (lang: Language) => ({ de: 'Deutsch', en: 'English', ti: 'ትግርኛ', am: 'አማርኛ' }[lang]);
+
+  if (!mounted || !authChecked) return (
+    <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500 mx-auto mb-4"></div>
+        <p>Lade Habesha AI...</p>
       </div>
-    );
-  }
+    </div>
+  );
 
   if (!user) return null;
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-emerald-950 overflow-hidden">
 
-      {/* Sidebar — auf Mobile per Overlay, auf Desktop fest */}
+      {/* Sidebar */}
       <>
-        {/* Overlay Backdrop (nur Mobile) */}
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 bg-black/50 z-20 lg:hidden"
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
-
-        {/* Sidebar Panel */}
-        <div className={`
-          fixed inset-y-0 left-0 z-30 transition-transform duration-300 ease-in-out
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-          lg:relative lg:translate-x-0 lg:flex-shrink-0
-        `}>
-          <Sidebar
-            user={{ id: user.id, email: user.email, full_name: userName }}
-            profile={{ preferred_language: userLanguage }}
-            premium={{ isPremium, remaining: remainingUploads }}
-            chatHistory={conversations}
-            onClose={() => setSidebarOpen(false)}
-          />
+        {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+        <div className={`fixed inset-y-0 left-0 z-30 transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0 lg:flex-shrink-0`}>
+          <Sidebar user={{ id: user.id, email: user.email, full_name: userName }} profile={{ preferred_language: userLanguage }} premium={{ isPremium, remaining: remainingUploads }} chatHistory={conversations} onClose={() => setSidebarOpen(false)} />
         </div>
       </>
 
-      {/* Haupt-Chat-Bereich */}
+      {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
 
         {/* Header */}
         <header className="bg-emerald-700 shadow-lg z-10 flex-shrink-0">
-          <div className="px-4 py-3 flex items-center">
-            <button
-              onClick={() => setSidebarOpen(prev => !prev)}
-              className="text-white p-1.5 hover:bg-white/10 rounded-lg transition-colors mr-3 lg:hidden"
-              aria-label="Sidebar öffnen"
-            >
+          <div className="px-4 py-3 flex items-center gap-3">
+            <button onClick={() => setSidebarOpen(p => !p)} className="text-white p-1.5 hover:bg-white/10 rounded-lg transition-colors lg:hidden">
               <div className="flex flex-col gap-1.5">
                 <span className="block w-5 h-0.5 bg-white rounded-full"></span>
                 <span className="block w-5 h-0.5 bg-white rounded-full"></span>
@@ -315,65 +233,43 @@ export default function Home() {
             </button>
             <div>
               <h1 className="text-lg font-semibold text-white">Habesha AI</h1>
-              <p className="text-xs text-emerald-200">{getLanguageLabel(userLanguage)} · Behördenbriefe verstehen</p>
+              <p className="text-xs text-emerald-200">{getLangLabel(userLanguage)} · Behördenbriefe verstehen</p>
             </div>
           </div>
         </header>
 
-        {/* Chat Messages */}
+        {/* Messages */}
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto px-4 py-4">
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center text-center min-h-[calc(100vh-200px)]">
                 <div className="w-20 h-20 bg-emerald-700/30 rounded-full flex items-center justify-center mb-4 text-4xl">💬</div>
                 <h3 className="text-xl font-semibold text-white mb-2">Habesha AI</h3>
-                <p className="text-gray-400 text-sm max-w-md">
-                  Dein KI-Assistent für die Habesha Community.<br />
-                  Antwortet auf {getLanguageLabel(userLanguage)}
-                </p>
+                <p className="text-gray-400 text-sm max-w-md">Dein KI-Assistent für die Habesha Community.</p>
                 <div className="mt-8 grid grid-cols-2 gap-3 max-w-md">
-                  {['Jobcenter', 'Finanzamt', 'AOK', 'Ausländerbehörde'].map((topic) => (
-                    <button
-                      key={topic}
-                      onClick={() => setInput(`${topic} Brief erklären`)}
-                      className="px-4 py-2 bg-gray-700 rounded-xl text-sm hover:bg-gray-600 transition text-white"
-                    >
-                      {topic === 'Jobcenter' && '🏢 '}{topic === 'Finanzamt' && '💰 '}{topic === 'AOK' && '🏥 '}{topic === 'Ausländerbehörde' && '🪪 '}{topic}
+                  {[['🏢', 'Jobcenter'], ['💰', 'Finanzamt'], ['🏥', 'AOK'], ['🪪', 'Ausländerbehörde']].map(([icon, topic]) => (
+                    <button key={topic} onClick={() => setInput(`${topic} Brief erklären`)} className="px-4 py-2 bg-gray-700 rounded-xl text-sm hover:bg-gray-600 transition text-white">
+                      {icon} {topic}
                     </button>
                   ))}
                 </div>
               </div>
-            ) : (
-              messages.map((msg, i) => (
-                <div key={i} className="mb-4">
-                  <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${
-                      msg.role === 'user'
-                        ? 'bg-emerald-600 text-white rounded-br-sm'
-                        : 'bg-gray-700 text-gray-100 rounded-bl-sm'
-                    }`}>
-                      {msg.image && (
-                        <img
-                          src={msg.image}
-                          alt="Bild"
-                          className="max-w-[200px] rounded-lg mb-2 cursor-pointer"
-                          onClick={() => window.open(msg.image, '_blank')}
-                        />
-                      )}
-                      <p className="text-base whitespace-pre-wrap break-words">{msg.content}</p>
-                    </div>
+            ) : messages.map((msg, i) => (
+              <div key={i} className="mb-4">
+                <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === 'user' ? 'bg-emerald-600 text-white rounded-br-sm' : 'bg-gray-700 text-gray-100 rounded-bl-sm'}`}>
+                    {msg.image && <img src={msg.image} alt="Bild" className="max-w-[200px] rounded-lg mb-2 cursor-pointer" onClick={() => window.open(msg.image, '_blank')} />}
+                    <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                   </div>
                 </div>
-              ))
-            )}
-            {loading && (
+              </div>
+            ))}
+            {(loading || uploadingFile) && (
               <div className="flex justify-start mb-4">
-                <div className="bg-gray-700 rounded-2xl px-4 py-3">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
-                  </div>
+                <div className="bg-gray-700 rounded-2xl px-4 py-3 flex gap-1">
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
                 </div>
               </div>
             )}
@@ -383,27 +279,48 @@ export default function Home() {
 
         {/* Input */}
         <div className="border-t border-gray-700 p-3 bg-gray-800/90">
+
+          {/* Attach Menu */}
+          {showAttachMenu && (
+            <div className="mb-3 flex gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+              <button onClick={() => cameraInputRef.current?.click()} className="flex flex-col items-center gap-1 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-2xl text-white text-xs transition">
+                <span className="text-2xl">📷</span><span>Kamera</span>
+              </button>
+              <button onClick={() => { if (fileInputRef.current) { fileInputRef.current.accept = 'image/*'; fileInputRef.current.click(); } }} className="flex flex-col items-center gap-1 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-2xl text-white text-xs transition">
+                <span className="text-2xl">🖼️</span><span>Galerie</span>
+              </button>
+              <button onClick={() => { if (fileInputRef.current) { fileInputRef.current.accept = '.pdf,.doc,.docx,.txt'; fileInputRef.current.click(); } }} className="flex flex-col items-center gap-1 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-2xl text-white text-xs transition">
+                <span className="text-2xl">📄</span><span>PDF/Doc</span>
+              </button>
+            </div>
+          )}
+
+          {/* Hidden file inputs */}
+          <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; f.type.startsWith('image/') ? handleImageUpload(f) : handleFileUpload(f); e.target.value = ''; }} />
+          <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload(f); e.target.value = ''; }} />
+
+          {/* Row */}
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => { setInput(e.target.value); autoResize(e); }}
-              onKeyDown={handleKeyDown}
-              placeholder={`Nachricht auf ${getLanguageLabel(userLanguage)}...`}
-              className="flex-1 bg-gray-700 rounded-2xl px-4 py-2 text-white text-base placeholder-gray-400 focus:outline-none resize-none"
-              rows={1}
-              style={{ minHeight: '40px', maxHeight: '120px' }}
-              disabled={loading}
-            />
-            <button
-              onClick={sendMessage}
-              disabled={!input.trim() || loading}
-              className={`p-2 rounded-full transition-colors ${
-                input.trim() && !loading ? 'text-emerald-400 hover:text-emerald-300' : 'text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+
+            {/* + */}
+            <button onClick={() => setShowAttachMenu(p => !p)} className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${showAttachMenu ? 'bg-emerald-600 text-white rotate-45' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`} aria-label="Anhang">
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+
+            {/* Textarea */}
+            <textarea ref={inputRef} value={input} onChange={(e) => { setInput(e.target.value); autoResize(e); }} onKeyDown={handleKeyDown} placeholder="Nachricht schreiben..." className="flex-1 bg-gray-700 rounded-2xl px-4 py-2 text-white text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 resize-none" rows={1} style={{ minHeight: '40px', maxHeight: '120px' }} disabled={loading || uploadingFile} />
+
+            {/* Mic */}
+            <button onClick={toggleVoice} className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors ${isListening ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`} aria-label="Sprache">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            </button>
+
+            {/* Send */}
+            <button onClick={() => sendMessage()} disabled={!input.trim() || loading || uploadingFile} className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors ${input.trim() && !loading && !uploadingFile ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`} aria-label="Senden">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
               </svg>
             </button>
           </div>
