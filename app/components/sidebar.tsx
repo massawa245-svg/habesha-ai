@@ -1,4 +1,4 @@
- 'use client';
+'use client';
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -7,22 +7,14 @@ import { createClient } from '@/lib/supabase/client';
 type Lang = 'de' | 'ti' | 'am' | 'en';
 
 interface SidebarProps {
-  user: {
-    id: string;
-    email: string;
-    full_name?: string;
-  };
-  profile: {
-    preferred_language: Lang;
-  };
-  premium: {
-    isPremium: boolean;
-    remaining: number;
-  };
+  user: { id: string; email: string; full_name?: string };
+  profile: { preferred_language: Lang };
+  premium: { isPremium: boolean; remaining: number };
   chatHistory: Array<{ id: string; title: string; created_at: string }>;
+  onClose?: () => void;
 }
 
-export default function Sidebar({ user, profile, premium, chatHistory }: SidebarProps) {
+export default function Sidebar({ user, profile, premium, chatHistory, onClose }: SidebarProps) {
   const router = useRouter();
   const supabase = createClient();
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
@@ -33,40 +25,47 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
   }
 
   async function updateLanguage(lang: Lang) {
-    await supabase.auth.updateUser({
-      data: { preferred_language: lang }
-    });
+    await supabase.auth.updateUser({ data: { preferred_language: lang } });
     router.refresh();
   }
 
   const getLanguageLabel = (lang: Lang): string => {
     const labels: Record<Lang, string> = {
-      de: '🇩🇪 Deutsch',
-      en: '🇬🇧 English',
-      ti: '🇪🇷 ትግርኛ',
-      am: '🇪🇹 አማርኛ'
+      de: '🇩🇪 Deutsch', en: '🇬🇧 English', ti: '🇪🇷 ትግርኛ', am: '🇪🇹 አማርኛ',
     };
     return labels[lang];
   };
 
+  function navigate(path: string) {
+    router.push(path);
+    onClose?.();
+  }
+
   return (
     <div className="w-80 bg-gray-800 flex flex-col h-full">
-      {/* Sidebar Header */}
-      <div className="p-4 border-b border-gray-700">
+      {/* Header */}
+      <div className="p-4 border-b border-gray-700 flex items-center justify-between">
         <h2 className="text-white font-semibold text-lg">Meine Chats</h2>
+        {/* Close button — nur auf Mobile sichtbar */}
+        <button
+          onClick={onClose}
+          className="lg:hidden text-gray-400 hover:text-white p-1"
+        >
+          ✕
+        </button>
       </div>
 
       {/* New Chat Button */}
       <div className="p-4">
         <button
-          onClick={() => router.push('/')}
+          onClick={() => navigate('/')}
           className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl transition-colors text-sm font-medium"
         >
           + Neuer Chat
         </button>
       </div>
 
-      {/* Chat History List */}
+      {/* Chat History */}
       <div className="flex-1 overflow-y-auto px-3 space-y-1">
         {chatHistory.length === 0 && (
           <p className="text-gray-500 text-xs text-center mt-4">Noch keine Chats</p>
@@ -74,20 +73,16 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
         {chatHistory.map((conv) => (
           <div
             key={conv.id}
-            className={`p-3 rounded-xl cursor-pointer hover:bg-gray-700/50 transition-all`}
-            onClick={() => router.push(`/chat/${conv.id}`)}
+            className="p-3 rounded-xl cursor-pointer hover:bg-gray-700/50 transition-all"
+            onClick={() => navigate(`/chat/${conv.id}`)}
           >
-            <span className="text-sm font-medium text-white block truncate">
-              {conv.title}
-            </span>
-            <span className="text-xs text-gray-400">
-              {new Date(conv.created_at).toLocaleDateString()}
-            </span>
+            <span className="text-sm font-medium text-white block truncate">{conv.title}</span>
+            <span className="text-xs text-gray-400">{new Date(conv.created_at).toLocaleDateString()}</span>
           </div>
         ))}
       </div>
 
-      {/* PROFIL BEREICH - UNTEN */}
+      {/* Profil */}
       <div className="border-t border-gray-700 mt-auto">
         <button
           onClick={() => setShowLanguageMenu(!showLanguageMenu)}
@@ -97,17 +92,14 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
             {user.email?.[0]?.toUpperCase() || 'U'}
           </div>
           <div className="flex-1 text-left">
-            <p className="text-white text-sm font-medium truncate">
-              {user.full_name || user.email?.split('@')[0] || 'User'}
-            </p>
+            <p className="text-white text-sm font-medium truncate">{user.full_name || user.email?.split('@')[0] || 'User'}</p>
             <p className="text-gray-400 text-xs truncate">{user.email}</p>
           </div>
-          <span className="text-gray-400 text-xs">▼</span>
+          <span className="text-gray-400 text-xs">{showLanguageMenu ? '▲' : '▼'}</span>
         </button>
 
         {showLanguageMenu && (
           <div className="px-3 pb-3 space-y-2">
-            {/* Premium Status */}
             <div className="p-3 rounded-xl bg-gray-700/50">
               {premium.isPremium ? (
                 <div className="flex items-center gap-2 text-emerald-400">
@@ -119,12 +111,10 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm">Verbleibend: {premium.remaining}/10</span>
-                  </div>
+                  <span className="text-sm text-white">Verbleibend: {premium.remaining}/10</span>
                   <button
-                    onClick={() => router.push('/pricing')}
-                    className="w-full py-2 bg-gradient-to-r from-yellow-600 to-yellow-500 rounded-lg text-sm font-semibold"
+                    onClick={() => navigate('/pricing')}
+                    className="w-full py-2 bg-gradient-to-r from-yellow-600 to-yellow-500 rounded-lg text-sm font-semibold text-white"
                   >
                     💎 Premium Upgrade
                   </button>
@@ -132,7 +122,6 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
               )}
             </div>
 
-            {/* Language Selection */}
             <div className="p-2">
               <p className="text-xs text-gray-400 mb-2 px-2">🌍 Sprache</p>
               {(['de', 'en', 'ti', 'am'] as Lang[]).map((code) => (
@@ -140,8 +129,8 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
                   key={code}
                   onClick={() => updateLanguage(code)}
                   className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${
-                    profile.preferred_language === code 
-                      ? 'bg-emerald-600 text-white' 
+                    profile.preferred_language === code
+                      ? 'bg-emerald-600 text-white'
                       : 'hover:bg-gray-700 text-gray-300'
                   }`}
                 >
@@ -151,7 +140,6 @@ export default function Sidebar({ user, profile, premium, chatHistory }: Sidebar
               ))}
             </div>
 
-            {/* Logout Button */}
             <button
               onClick={handleLogout}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-red-400 hover:bg-red-900/30 transition-colors text-sm"

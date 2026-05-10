@@ -24,12 +24,10 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
-  const [uploading, setUploading] = useState<boolean>(false);
   const [mounted, setMounted] = useState<boolean>(false);
   const [user, setUser] = useState<any>(null);
   const [userEmail, setUserEmail] = useState<string>('');
   const [userName, setUserName] = useState<string>('');
-  const [isListening, setIsListening] = useState<boolean>(false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
@@ -37,12 +35,9 @@ export default function Home() {
   const [userLanguage, setUserLanguage] = useState<Language>('de');
   const [isPremium, setIsPremium] = useState<boolean>(false);
   const [remainingUploads, setRemainingUploads] = useState<number>(8);
-
-  const [pdfCount, setPdfCount] = useState<number>(0);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(30 * 60);
   const [limitReached, setLimitReached] = useState<boolean>(false);
 
-  const MAX_PDF = 8;
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const initCalled = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -59,7 +54,6 @@ export default function Home() {
       .select('full_name, preferred_language')
       .eq('id', userId)
       .single();
-    
     if (data) {
       setUserName(data.full_name || '');
       setUserLanguage((data.preferred_language as Language) || 'de');
@@ -69,7 +63,6 @@ export default function Home() {
   const startChatTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      if (isPremium || limitReached) return;
       setRemainingSeconds(prev => {
         if (prev <= 1) {
           if (timerRef.current) clearInterval(timerRef.current);
@@ -80,7 +73,7 @@ export default function Home() {
         return prev - 1;
       });
     }, 1000);
-  }, [isPremium, limitReached, addSystemMessage]);
+  }, [addSystemMessage]);
 
   const loadConversations = useCallback(async (userId: string) => {
     const { data } = await supabase
@@ -124,17 +117,6 @@ export default function Home() {
     await supabase.from('conversations').update({ title }).eq('id', conversationId);
   }, [supabase]);
 
-  const deleteConversation = useCallback(async (id: string, userId: string) => {
-    if (confirm('Chat wirklich löschen?')) {
-      await supabase.from('conversations').delete().eq('id', id);
-      if (currentConversationId === id) {
-        localStorage.removeItem('lastConversationId');
-        await startNewChat(userId);
-      }
-      await loadConversations(userId);
-    }
-  }, [supabase, currentConversationId, startNewChat, loadConversations]);
-
   const handleLogout = useCallback(async () => {
     await supabase.auth.signOut();
     localStorage.removeItem('lastConversationId');
@@ -153,7 +135,6 @@ export default function Home() {
           window.location.href = '/login';
           return;
         }
-
         setUser(authenticatedUser);
         setUserEmail(authenticatedUser.email || '');
         await loadUserProfile(authenticatedUser.id);
@@ -248,7 +229,6 @@ export default function Home() {
       });
       const data = await res.json();
       setMessages([...newMessages, { role: 'assistant', content: data.response }]);
-
       if (isFirstMessage && currentConversationId) {
         await updateChatTitle(currentConversationId, input);
       }
@@ -267,18 +247,9 @@ export default function Home() {
     }
   }, [sendMessage]);
 
-  const formatTime = useCallback((seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  }, []);
-
   const getLanguageLabel = (lang: Language): string => {
     const labels: Record<Language, string> = {
-      de: '🇩🇪 Deutsch',
-      en: '🇬🇧 English',
-      ti: '🇪🇷 ትግርኛ',
-      am: '🇪🇹 አማርኛ'
+      de: '🇩🇪 Deutsch', en: '🇬🇧 English', ti: '🇪🇷 ትግርኛ', am: '🇪🇹 አማርኛ',
     };
     return labels[lang];
   };
@@ -298,22 +269,43 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-emerald-950 overflow-hidden">
-      
-      {/* Sidebar - Jetzt separat! */}
-      <Sidebar
-        user={{ id: user.id, email: user.email, full_name: userName }}
-        profile={{ preferred_language: userLanguage }}
-        premium={{ isPremium, remaining: remainingUploads }}
-        chatHistory={conversations}
-      />
+
+      {/* Sidebar — auf Mobile per Overlay, auf Desktop fest */}
+      <>
+        {/* Overlay Backdrop (nur Mobile) */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/50 z-20 lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* Sidebar Panel */}
+        <div className={`
+          fixed inset-y-0 left-0 z-30 transition-transform duration-300 ease-in-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          lg:relative lg:translate-x-0 lg:flex-shrink-0
+        `}>
+          <Sidebar
+            user={{ id: user.id, email: user.email, full_name: userName }}
+            profile={{ preferred_language: userLanguage }}
+            premium={{ isPremium, remaining: remainingUploads }}
+            chatHistory={conversations}
+            onClose={() => setSidebarOpen(false)}
+          />
+        </div>
+      </>
 
       {/* Haupt-Chat-Bereich */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+
+        {/* Header */}
         <header className="bg-emerald-700 shadow-lg z-10 flex-shrink-0">
           <div className="px-4 py-3 flex items-center">
             <button
-              onClick={() => setSidebarOpen(!sidebarOpen)}
+              onClick={() => setSidebarOpen(prev => !prev)}
               className="text-white p-1.5 hover:bg-white/10 rounded-lg transition-colors mr-3 lg:hidden"
+              aria-label="Sidebar öffnen"
             >
               <div className="flex flex-col gap-1.5">
                 <span className="block w-5 h-0.5 bg-white rounded-full"></span>
@@ -327,11 +319,6 @@ export default function Home() {
             </div>
           </div>
         </header>
-
-        {/* Mobile Sidebar Overlay */}
-        {sidebarOpen && (
-          <div className="fixed inset-0 bg-black/50 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
-        )}
 
         {/* Chat Messages */}
         <main className="flex-1 overflow-y-auto">
@@ -349,9 +336,9 @@ export default function Home() {
                     <button
                       key={topic}
                       onClick={() => setInput(`${topic} Brief erklären`)}
-                      className="px-4 py-2 bg-gray-700 rounded-xl text-sm hover:bg-gray-600 transition"
+                      className="px-4 py-2 bg-gray-700 rounded-xl text-sm hover:bg-gray-600 transition text-white"
                     >
-                      {topic === 'Jobcenter' && '🏢'} {topic === 'Finanzamt' && '💰'} {topic === 'AOK' && '🏥'} {topic === 'Ausländerbehörde' && '🪪'} {topic}
+                      {topic === 'Jobcenter' && '🏢 '}{topic === 'Finanzamt' && '💰 '}{topic === 'AOK' && '🏥 '}{topic === 'Ausländerbehörde' && '🪪 '}{topic}
                     </button>
                   ))}
                 </div>
@@ -361,9 +348,18 @@ export default function Home() {
                 <div key={i} className="mb-4">
                   <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${
-                      msg.role === 'user' ? 'bg-emerald-600 text-white rounded-br-sm' : 'bg-gray-700 text-gray-100 rounded-bl-sm'
+                      msg.role === 'user'
+                        ? 'bg-emerald-600 text-white rounded-br-sm'
+                        : 'bg-gray-700 text-gray-100 rounded-bl-sm'
                     }`}>
-                      {msg.image && <img src={msg.image} alt="Bild" className="max-w-[200px] rounded-lg mb-2" onClick={() => window.open(msg.image, '_blank')} />}
+                      {msg.image && (
+                        <img
+                          src={msg.image}
+                          alt="Bild"
+                          className="max-w-[200px] rounded-lg mb-2 cursor-pointer"
+                          onClick={() => window.open(msg.image, '_blank')}
+                        />
+                      )}
                       <p className="text-base whitespace-pre-wrap break-words">{msg.content}</p>
                     </div>
                   </div>
