@@ -185,9 +185,12 @@ ${extractedText.substring(0, 4000)}`;
 // ============================================
 // MAIN POST ROUTE CONTROLLER
 // ============================================
-const { image, message = '', conversationId, language } = await req.json();
-const { data: { user } } = await supabase.auth.getUser();
-const userId = user?.id ?? null;
+export async function POST(req: Request) {
+  try {
+    const supabase = await createClient();
+    const { image, message = '', conversationId, language } = await req.json();
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id ?? null;
 
     if (!image) {
       return NextResponse.json({
