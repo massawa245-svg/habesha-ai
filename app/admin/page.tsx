@@ -3,316 +3,157 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
-type Feedback = {
-  id: string;
-  question: string;
-  ai_response: string;
-  user_feedback: string;
-  corrected_response: string | null;
+type ChatEntry = {
+  id: number;
+  user_question: string;
+  ai_answer: string;
   language: string;
-  user_id: string | null;
-  session_id: string | null;
-  created_at: string;
-};
-
-type TrustedUser = {
-  id: string;
-  email: string;
-  role: string;
-  active: boolean;
+  source: string;
+  quality_score: number | null;
+  similarity_score: number | null;
+  reviewed: boolean;
+  approved_for_training: boolean;
+  corrected_answer: string | null;
   created_at: string;
 };
 
 export default function AdminDashboard() {
-  const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
-  const [trustedUsers, setTrustedUsers] = useState<TrustedUser[]>([]);
-  const [newEmail, setNewEmail] = useState('');
+  const [chats, setChats] = useState<ChatEntry[]>([]);
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [processingId, setProcessingId] = useState<string | null>(null);
-  
-  // 🔥 supabase Client stabil halten (nur einmal erstellen)
+  const [processingId, setProcessingId] = useState<number | null>(null);
+  const [filter, setFilter] = useState<'unreviewed' | 'all'>('unreviewed');
+  // Korrektur-Texte pro Chat-Eintrag
+  const [corrections, setCorrections] = useState<Record<number, string>>({});
+
   const supabase = useRef(createClient()).current;
   const authChecked = useRef(false);
 
   // ============================================
-  // 🔥 DATEN LADEN (mit useCallback)
+  // CHATS LADEN
   // ============================================
-  const loadTempFeedback = useCallback(async () => {
-    const { data } = await supabase
-      .from('user_feedback_temp')
+  const loadChats = useCallback(async () => {
+    let query = supabase
+      .from('chat_history')
       .select('*')
-      .order('created_at', { ascending: false });
-    setFeedbacks(data || []);
-  }, [supabase]);
+      .order('created_at', { ascending: false })
+      .limit(100);
 
-  const loadTrustedUsers = useCallback(async () => {
-    const { data } = await supabase
-      .from('trusted_users')
-      .select('*')
-      .eq('active', true);
-    setTrustedUsers(data || []);
-  }, [supabase]);
+    if (filter === 'unreviewed') {
+      query = query.eq('reviewed', false);
+    }
+
+    const { data } = await query;
+    setChats(data || []);
+
+    // Korrektur-Felder vorbefuellen mit der KI-Antwort (zum Bearbeiten)
+    const initialCorrections: Record<number, string> = {};
+    (data || []).forEach((c: ChatEntry) => {
+      initialCorrections[c.id] = c.corrected_answer || c.ai_answer;
+    });
+    setCorrections(initialCorrections);
+  }, [supabase, filter]);
 
   // ============================================
-  // 🔥 AUTH CHECK MIT DEBUG LOGS
+  // AUTH CHECK
   // ============================================
   useEffect(() => {
     const checkAuth = async () => {
-      console.log('🔍 Checking Admin Auth...');
-
       try {
-        // 1. User prüfen
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-        
-        console.log('👤 USER ID:', user?.id);
-        console.log('👤 USER EMAIL:', user?.email);
-        console.log('❗ User Error:', userError?.message);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) { window.location.href = '/login'; return; }
 
-        if (!user) {
-          console.log('❌ Kein User → redirect login');
-          window.location.href = '/login';
-          return;
-        }
-
-        // 2. Admin prüfen (mit user_id)
-        const { data: trusted, error: trustedError } = await supabase
+        const { data: trusted } = await supabase
           .from('trusted_users')
           .select('*')
           .eq('user_id', user.id)
           .eq('role', 'admin')
           .maybeSingle();
 
-        console.log('🛡️ TRUSTED (by user_id):', trusted);
-        console.log('❗ Trusted Error:', trustedError?.message);
-
-        // 3. Fallback: Prüfe auch mit email (für Debug)
-        if (!trusted) {
-          const { data: trustedByEmail } = await supabase
-            .from('trusted_users')
-            .select('*')
-            .eq('email', user.email)
-            .eq('role', 'admin')
-            .maybeSingle();
-          
-          console.log('🛡️ TRUSTED (by email):', trustedByEmail);
-          
-          if (trustedByEmail && !trustedByEmail.user_id) {
-            console.log('⚠️ Achtung: trusted entry hat keine user_id! Bitte migrieren.');
-          }
-        }
-
-        if (!trusted) {
-          console.log('❌ Kein Admin → redirect home');
-          window.location.href = '/';
-          return;
-        }
-
-        console.log('✅ Admin erkannt!');
+        if (!trusted) { window.location.href = '/'; return; }
 
         setIsAuthorized(true);
-        
-        // 3. Daten laden
-        await loadTempFeedback();
-        await loadTrustedUsers();
-        
+        await loadChats();
       } catch (err) {
-        console.error('❌ Auth Check Error:', err);
+        console.error('Auth Error:', err);
         window.location.href = '/login';
       } finally {
         setLoading(false);
       }
     };
-    
+
     if (!authChecked.current) {
       authChecked.current = true;
       checkAuth();
     }
-  }, [supabase, loadTempFeedback, loadTrustedUsers]);
+  }, [supabase, loadChats]);
+
+  useEffect(() => {
+    if (isAuthorized) loadChats();
+  }, [filter, isAuthorized, loadChats]);
 
   // ============================================
-  // 🔥 FEEDBACK AKTIONEN
+  // FREIGEBEN (mit Korrektur) -> training_data
   // ============================================
-  const approveFeedback = useCallback(async (id: string) => {
-    setProcessingId(id);
+  const approveChat = useCallback(async (chat: ChatEntry) => {
+    const finalAnswer = corrections[chat.id]?.trim();
+    if (!finalAnswer) {
+      alert('Die Antwort darf nicht leer sein.');
+      return;
+    }
+
+    setProcessingId(chat.id);
     try {
-      const feedback = feedbacks.find(f => f.id === id);
-      if (!feedback) return;
+      const res = await fetch('/api/admin/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatHistoryId: chat.id,
+          question: chat.user_question,
+          finalAnswer: finalAnswer,
+          language: chat.language === 'ti' ? 'tigrinya' : chat.language === 'am' ? 'amharic' : chat.language,
+        }),
+      });
 
-      // Prüfen: Bei "schlecht" ohne Korrektur warnen
-      if (feedback.user_feedback === 'schlecht' && !feedback.corrected_response) {
-        const confirm = window.confirm(
-          '⚠️ Dieses Feedback ist "schlecht" und hat KEINE Korrektur.\n\n' +
-          'Ohne Korrektur kann die KI daraus nicht lernen.\n\n' +
-          'Trotzdem freigeben? (Nur sinnvoll wenn die Antwort offensichtlich falsch ist)'
-        );
-        if (!confirm) {
-          setProcessingId(null);
-          return;
-        }
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Fehler');
 
-      // In user_feedback Tabelle kopieren (für Training)
-      const { error: insertError } = await supabase
-        .from('user_feedback')
-        .insert({
-          user_id: feedback.user_id,
-          question: feedback.question,
-          ai_response: feedback.ai_response,
-          user_feedback: feedback.user_feedback,
-          corrected_response: feedback.corrected_response,
-          language: feedback.language,
-          session_id: feedback.session_id,
-        });
-
-      if (insertError) throw insertError;
-
-      // Aus temp Tabelle löschen
-      const { error: deleteError } = await supabase
-        .from('user_feedback_temp')
-        .delete()
-        .eq('id', id);
-
-      if (deleteError) throw deleteError;
-
-      const message = feedback.corrected_response 
-        ? `✅ Feedback freigegeben!\n\n📝 Mit Korrektur: "${feedback.corrected_response}"\n→ Wird für KI-Training verwendet.`
-        : `✅ Feedback freigegeben!\n\n→ Wird für KI-Training verwendet.`;
-      
-      alert(message);
-      loadTempFeedback();
+      const wasCorrected = finalAnswer !== chat.ai_answer;
+      alert(
+        wasCorrected
+          ? `✅ Korrigiert & freigegeben!\n\nDeine Version wird ab jetzt genutzt.${data.hadEmbedding ? '' : '\n(Embedding folgt spaeter)'}`
+          : `✅ Freigegeben!${data.hadEmbedding ? '' : '\n(Embedding folgt spaeter)'}`
+      );
+      loadChats();
     } catch (error) {
-      console.error('Fehler beim Freigeben:', error);
-      alert('❌ Fehler beim Freigeben');
+      console.error('Freigeben-Fehler:', error);
+      alert('❌ Fehler beim Freigeben: ' + (error instanceof Error ? error.message : ''));
     } finally {
       setProcessingId(null);
     }
-  }, [feedbacks, supabase, loadTempFeedback]);
+  }, [corrections, loadChats]);
 
-  const deleteFeedback = useCallback(async (id: string) => {
-    const feedback = feedbacks.find(f => f.id === id);
-    let message = 'Bist du sicher? Dieses Feedback wird gelöscht und NICHT fürs Training verwendet.';
-    
-    if (feedback?.corrected_response) {
-      message = '⚠️ Achtung! Dieses Feedback hat eine Korrektur.\n\n' +
-                `Korrektur: "${feedback.corrected_response}"\n\n` +
-                'Trotzdem löschen? (Die Korrektur geht dann verloren)';
-    }
-    
-    if (!confirm(message)) return;
+  // ============================================
+  // ABLEHNEN / LOESCHEN (nicht ins Training)
+  // ============================================
+  const rejectChat = useCallback(async (chatId: number) => {
+    if (!confirm('Diese Antwort ablehnen? Sie wird NICHT fuers Training verwendet.')) return;
 
-    setProcessingId(id);
+    setProcessingId(chatId);
     try {
-      const { error } = await supabase
-        .from('user_feedback_temp')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-
-      alert('🗑️ Feedback gelöscht');
-      loadTempFeedback();
+      const res = await fetch('/api/admin/approve', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatHistoryId: chatId }),
+      });
+      if (!res.ok) throw new Error('Fehler');
+      loadChats();
     } catch (error) {
-      console.error('Fehler beim Löschen:', error);
-      alert('❌ Fehler beim Löschen');
+      alert('❌ Fehler beim Ablehnen');
     } finally {
       setProcessingId(null);
     }
-  }, [feedbacks, supabase, loadTempFeedback]);
-
-  const updateCorrection = useCallback(async (id: string, currentCorrection: string | null) => {
-    const newCorrection = prompt('Korrektur eingeben:', currentCorrection || '');
-    if (newCorrection === null) return;
-
-    setProcessingId(id);
-    try {
-      const { error } = await supabase
-        .from('user_feedback_temp')
-        .update({ corrected_response: newCorrection || null })
-        .eq('id', id);
-
-      if (error) throw error;
-
-      alert('✅ Korrektur gespeichert');
-      loadTempFeedback();
-    } catch (error) {
-      console.error('Fehler beim Aktualisieren:', error);
-      alert('❌ Fehler beim Speichern');
-    } finally {
-      setProcessingId(null);
-    }
-  }, [supabase, loadTempFeedback]);
-
-  // ============================================
-  // 🔥 BETA-TESTER VERWALTEN
-  // ============================================
-  const addTester = useCallback(async () => {
-    if (!newEmail) return;
-    
-    try {
-      const { data: existing } = await supabase
-        .from('trusted_users')
-        .select('*')
-        .eq('email', newEmail)
-        .maybeSingle();
-
-      if (existing) {
-        alert('❌ Dieser User ist bereits eingetragen.');
-        return;
-      }
-
-      const { error } = await supabase
-        .from('trusted_users')
-        .insert({
-          email: newEmail,
-          role: 'beta',
-          active: true
-        });
-
-      if (error) throw error;
-
-      setNewEmail('');
-      loadTrustedUsers();
-      alert('✅ Beta-Tester hinzugefügt! (Verknüpft sich automatisch beim Login)');
-    } catch (error) {
-      console.error('Fehler beim Hinzufügen:', error);
-      alert('❌ Fehler beim Hinzufügen');
-    }
-  }, [newEmail, supabase, loadTrustedUsers]);
-
-  const removeTester = useCallback(async (email: string) => {
-    if (!confirm(`Beta-Tester ${email} wirklich entfernen?`)) return;
-    
-    try {
-      const { error } = await supabase
-        .from('trusted_users')
-        .delete()
-        .eq('email', email);
-
-      if (error) throw error;
-
-      loadTrustedUsers();
-      alert('✅ Beta-Tester entfernt');
-    } catch (error) {
-      console.error('Fehler beim Entfernen:', error);
-      alert('❌ Fehler beim Entfernen');
-    }
-  }, [supabase, loadTrustedUsers]);
-
-  // ============================================
-  // 🎨 UI HELPER
-  // ============================================
-  const getRatingBadge = (rating: string, hasCorrection: boolean) => {
-    if (rating === 'gut') {
-      return <span className="bg-green-600 text-white px-2 py-0.5 rounded-full text-xs">👍 Gut</span>;
-    } else if (rating === 'schlecht') {
-      if (hasCorrection) {
-        return <span className="bg-yellow-600 text-white px-2 py-0.5 rounded-full text-xs">👎 Schlecht (mit Korrektur ✏️)</span>;
-      }
-      return <span className="bg-red-600 text-white px-2 py-0.5 rounded-full text-xs">👎 Schlecht (ohne Korrektur)</span>;
-    }
-    return <span className="bg-gray-600 text-white px-2 py-0.5 rounded-full text-xs">⚪ Neutral</span>;
-  };
+  }, [loadChats]);
 
   // ============================================
   // RENDER
@@ -327,140 +168,114 @@ export default function AdminDashboard() {
       </div>
     );
   }
-  
+
   if (!isAuthorized) return null;
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-2xl sm:text-3xl font-bold">🇪🇷 Admin Dashboard</h1>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold">🇪🇷 Habesha AI - Korrektur</h1>
         <button
-          onClick={() => supabase.auth.signOut().then(() => window.location.href = '/')}
+          onClick={() => supabase.auth.signOut().then(() => (window.location.href = '/'))}
           className="bg-red-600 px-4 py-2 rounded hover:bg-red-700"
         >
           Logout
         </button>
       </div>
-      
-      {/* Beta-Tester Verwaltung */}
-      <div className="bg-gray-800 p-4 sm:p-6 rounded-xl mb-8">
-        <h2 className="text-xl font-bold mb-4">👥 Beta-Tester verwalten</h2>
-        
-        <div className="flex flex-col sm:flex-row gap-2 mb-4">
-          <input
-            type="email"
-            value={newEmail}
-            onChange={(e) => setNewEmail(e.target.value)}
-            placeholder="Email eingeben..."
-            className="flex-1 bg-gray-700 p-2 rounded text-white"
-          />
-          <button
-            onClick={addTester}
-            className="bg-emerald-600 px-4 py-2 rounded hover:bg-emerald-700"
-          >
-            Hinzufügen
-          </button>
-        </div>
-        
-        <div className="space-y-2">
-          {trustedUsers.map((user) => (
-            <div key={user.id} className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-700 p-2 rounded gap-2">
-              <span>{user.email} <span className="text-emerald-400 text-sm">({user.role})</span></span>
-              <button
-                onClick={() => removeTester(user.email)}
-                className="text-red-400 hover:text-red-300 text-sm"
-              >
-                Entfernen
-              </button>
-            </div>
-          ))}
-        </div>
+
+      {/* Filter */}
+      <div className="flex gap-2 mb-6">
+        <button
+          onClick={() => setFilter('unreviewed')}
+          className={`px-4 py-2 rounded ${filter === 'unreviewed' ? 'bg-emerald-600' : 'bg-gray-700'}`}
+        >
+          Ungeprüft
+        </button>
+        <button
+          onClick={() => setFilter('all')}
+          className={`px-4 py-2 rounded ${filter === 'all' ? 'bg-emerald-600' : 'bg-gray-700'}`}
+        >
+          Alle
+        </button>
       </div>
-      
-      {/* Ungeprüftes Feedback */}
+
       <div className="bg-gray-800 p-4 sm:p-6 rounded-xl">
-        <h2 className="text-xl font-bold mb-4">📝 Ungeprüftes Feedback ({feedbacks.length})</h2>
-        
-        {feedbacks.length === 0 ? (
-          <p className="text-gray-400 text-center py-8">Keine ungeprüften Feedback-Einträge</p>
+        <h2 className="text-xl font-bold mb-4">
+          📝 Chats ({chats.length})
+        </h2>
+
+        {chats.length === 0 ? (
+          <p className="text-gray-400 text-center py-8">Keine Einträge</p>
         ) : (
           <div className="space-y-4">
-            {feedbacks.map((fb) => (
-              <div key={fb.id} className={`bg-gray-700 p-4 rounded border ${
-                fb.user_feedback === 'schlecht' && !fb.corrected_response 
-                  ? 'border-red-500/50' 
-                  : fb.user_feedback === 'schlecht' && fb.corrected_response
-                  ? 'border-yellow-500/50'
-                  : 'border-gray-600'
-              }`}>
-                <div className="flex flex-wrap justify-between items-start gap-2 mb-2">
-                  <p className="text-sm text-gray-400">
-                    {new Date(fb.created_at).toLocaleString()}
-                  </p>
-                  {getRatingBadge(fb.user_feedback, !!fb.corrected_response)}
+            {chats.map((chat) => (
+              <div
+                key={chat.id}
+                className={`bg-gray-700 p-4 rounded border ${
+                  chat.approved_for_training
+                    ? 'border-green-500/50'
+                    : chat.reviewed
+                    ? 'border-gray-500/50'
+                    : 'border-yellow-500/50'
+                }`}
+              >
+                {/* Meta */}
+                <div className="flex flex-wrap justify-between items-center gap-2 mb-2 text-xs">
+                  <span className="text-gray-400">{new Date(chat.created_at).toLocaleString()}</span>
+                  <div className="flex gap-2">
+                    <span className="bg-blue-600 px-2 py-0.5 rounded-full">{chat.language}</span>
+                    <span className="bg-purple-600 px-2 py-0.5 rounded-full">{chat.source}</span>
+                    {chat.approved_for_training && (
+                      <span className="bg-green-600 px-2 py-0.5 rounded-full">✅ Im Training</span>
+                    )}
+                  </div>
                 </div>
-                
-                <p className="mt-2 break-words">
-                  <span className="text-emerald-400 font-medium">Frage:</span> {fb.question}
-                </p>
-                
-                <p className="break-words">
-                  <span className="text-blue-400 font-medium">KI:</span> {fb.ai_response}
-                </p>
-                
-                {fb.corrected_response && (
-                  <p className="break-words bg-green-900/30 p-2 rounded mt-1 border-l-4 border-green-500">
-                    <span className="text-green-400 font-medium">✏️ Korrektur (wird für Training verwendet):</span> {fb.corrected_response}
-                  </p>
-                )}
-                
-                {fb.user_feedback === 'schlecht' && !fb.corrected_response && (
-                  <p className="text-yellow-400 text-sm mt-1">
-                    ⚠️ Ohne Korrektur kann die KI aus diesem Feedback nicht lernen.
-                  </p>
-                )}
-                
+
+                {/* User-Frage */}
+                <div className="mt-2">
+                  <span className="text-emerald-400 font-medium text-sm">Frage (User):</span>
+                  <p className="break-words bg-gray-800 p-2 rounded mt-1">{chat.user_question}</p>
+                </div>
+
+                {/* KI-Antwort (original) */}
+                <div className="mt-2">
+                  <span className="text-blue-400 font-medium text-sm">KI-Antwort (original):</span>
+                  <p className="break-words bg-gray-800 p-2 rounded mt-1 text-gray-300">{chat.ai_answer}</p>
+                </div>
+
+                {/* Korrektur-Feld */}
+                <div className="mt-3">
+                  <span className="text-yellow-400 font-medium text-sm">
+                    ✏️ Deine Korrektur (das wird gespeichert):
+                  </span>
+                  <textarea
+                    value={corrections[chat.id] ?? ''}
+                    onChange={(e) =>
+                      setCorrections((prev) => ({ ...prev, [chat.id]: e.target.value }))
+                    }
+                    className="w-full bg-gray-900 p-2 rounded mt-1 text-white border border-gray-600 focus:border-emerald-500 focus:outline-none"
+                    rows={3}
+                    dir="auto"
+                  />
+                </div>
+
+                {/* Buttons */}
                 <div className="flex flex-col sm:flex-row gap-2 mt-3">
-                  {/* Korrektur bearbeiten */}
                   <button
-                    onClick={() => updateCorrection(fb.id, fb.corrected_response)}
-                    disabled={processingId === fb.id}
-                    className="bg-yellow-600 px-3 py-1.5 rounded hover:bg-yellow-700 text-sm disabled:opacity-50"
+                    onClick={() => approveChat(chat)}
+                    disabled={processingId === chat.id}
+                    className="bg-emerald-600 px-4 py-2 rounded hover:bg-emerald-700 text-sm disabled:opacity-50 flex-1"
                   >
-                    ✏️ {fb.corrected_response ? 'Korrektur bearbeiten' : 'Korrektur hinzufügen'}
+                    {processingId === chat.id ? '...' : '✅ Freigeben & Speichern'}
                   </button>
-                  
-                  {/* Löschen Button */}
                   <button
-                    onClick={() => deleteFeedback(fb.id)}
-                    disabled={processingId === fb.id}
-                    className="bg-red-600 px-3 py-1.5 rounded hover:bg-red-700 text-sm disabled:opacity-50"
+                    onClick={() => rejectChat(chat.id)}
+                    disabled={processingId === chat.id}
+                    className="bg-red-600 px-4 py-2 rounded hover:bg-red-700 text-sm disabled:opacity-50"
                   >
-                    🗑️ Löschen (nicht trainieren)
-                  </button>
-                  
-                  {/* Freigeben Button */}
-                  <button
-                    onClick={() => approveFeedback(fb.id)}
-                    disabled={processingId === fb.id}
-                    className={`px-3 py-1.5 rounded text-sm disabled:opacity-50 ${
-                      fb.user_feedback === 'schlecht' && !fb.corrected_response
-                        ? 'bg-orange-600 hover:bg-orange-700'
-                        : 'bg-emerald-600 hover:bg-emerald-700'
-                    }`}
-                  >
-                    {fb.corrected_response 
-                      ? '✅ Mit Korrektur freigeben' 
-                      : fb.user_feedback === 'gut' 
-                      ? '✅ Freigeben & Training'
-                      : '⚠️ Trotzdem freigeben (ohne Korrektur)'}
+                    🗑️ Ablehnen
                   </button>
                 </div>
-                
-                {/* User Info */}
-                {fb.user_id && (
-                  <p className="text-xs text-gray-500 mt-2">User ID: {fb.user_id.slice(0, 8)}...</p>
-                )}
               </div>
             ))}
           </div>

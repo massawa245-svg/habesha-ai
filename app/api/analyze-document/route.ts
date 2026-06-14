@@ -3,9 +3,10 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import { createClient } from '@/lib/supabase/server';
 import { checkPremium, incrementUsage } from '@/lib/premium';
+import crypto from 'crypto';
 
 // ============================================
-// API CLIENTS
+// API CLIENTS INITIALISIERUNG
 // ============================================
 const gemini = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
 
@@ -19,14 +20,18 @@ const groq = new OpenAI({
   baseURL: 'https://api.groq.com/openai/v1',
 });
 
-// ============================================
-// IDENTITY
-// ============================================
 const IDENTITY = `Du bist HABESHA AI – entwickelt von Massawa Software Technology (Deutschland).
 Du bist KEIN ChatGPT, KEIN Meta, KEIN Gemini, KEIN Claude.`;
 
+const PROMPT_LANG_MAP = {
+  de: 'DEUTSCH',
+  ti: 'TIGRINYA (ትግርኛ) - Schreibe hauptsächlich in Ge\'ez Schrift. Wichtige deutsche Eigennamen (z.B. Jobcenter, AOK, Finanzamt, IBAN, Fristen) bitte UNBEDINGT in lateinischen Buchstaben in Klammern dahinter setzen!',
+  am: 'AMHARISCH (አማርኛ) - Schreibe hauptsächlich in Ge\'ez Schrift. Wichtige deutsche Eigennamen oder Fristen bitte in lateinischen Buchstaben in Klammern dahinter setzen!',
+  en: 'ENGLISH',
+};
+
 // ============================================
-// SPRACHERKENNUNG
+// HELPER FUNCTIONS
 // ============================================
 function detectUserLanguage(text: string): 'de' | 'ti' | 'am' | 'en' {
   if (!text) return 'de';
@@ -41,9 +46,6 @@ function detectUserLanguage(text: string): 'de' | 'ti' | 'am' | 'en' {
   return 'de';
 }
 
-// ============================================
-// BEHÖRDEN-TYP ERKENNEN
-// ============================================
 function detectBehoerde(text: string): string {
   const lower = text.toLowerCase();
   if (lower.includes('jobcenter')) return 'Jobcenter';
@@ -57,9 +59,41 @@ function detectBehoerde(text: string): string {
   return 'Behörde';
 }
 
+async function saveToChatHistory(
+  supabase: any,
+  userId: string | null,
+  conversationId: string | null,
+  question: string,
+  answer: string,
+  language: string,
+  source: string
+) {
+  try {
+    await supabase.from('chat_history').insert({
+      user_id: userId || null,
+      user_question: question.substring(0, 500),
+      ai_answer: answer.substring(0, 2000),
+      language: language,
+      source: source,
+      reviewed: false,
+      approved_for_training: false,
+      created_at: new Date().toISOString(),
+    });
+
+    if (conversationId) {
+      await supabase.from('messages').insert([
+        { conversation_id: conversationId, role: 'user', content: question.substring(0, 500) },
+        { conversation_id: conversationId, role: 'assistant', content: answer }
+      ]);
+    }
+    console.log(`💾 Erfolgreich in Chat-History & Messages gesichert. Source: ${source}`);
+  } catch (err) {
+    console.error('Fehler beim Sichern der Chat-Daten:', err);
+  }
+}
+
 // ============================================
-// GEMINI VISION – OCR + ERKLÄRUNG IN EINEM!
-// 🔥 FIXED: Verwende gemini-2.5-flash statt 2.0-flash
+// CORE AI PIPELINES
 // ============================================
 async function analyzeImageWithGemini(
   base64Image: string,
@@ -67,158 +101,112 @@ async function analyzeImageWithGemini(
   userLang: 'de' | 'ti' | 'am' | 'en',
   userMessage: string
 ): Promise<string> {
-  // 🔥 DAS IST DER FIX 🔥
   const model = gemini.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-  const langMap = {
-    de: 'DEUTSCH',
-    ti: 'TIGRINYA (ትግርኛ) – nur Ethiopic Schrift, KEINE deutschen Übersetzungen in Klammern!',
-    am: 'AMHARISCH (አማርኛ) – nur Ethiopic Schrift, KEINE deutschen Übersetzungen in Klammern!',
-    en: 'ENGLISH',
-  };
-
   const prompt = `${IDENTITY}
+Du bist ein Experte für deutsche Behördenbriefe und hilfst der Habesha Community in Deutschland.
 
-Du bist ein Experte für deutsche Behördenbriefe und hilfst der Habesha Community.
+⚠️ WICHTIG: Antworte NUR in dieser Sprache: ${PROMPT_LANG_MAP[userLang]}
 
-⚠️ WICHTIG: Antworte NUR in dieser Sprache: ${langMap[userLang]}
+SCHRITT 1: Prüfe ob das Bild einen offiziellen Brief, ein Dokument oder ein Schreiben zeigt.
+- Wenn KEIN Dokument erkennbar ist (z.B. Essen, Gesichter, Uhren, Landschaften): Antworte höflich, dass du nur Dokumente analysieren kannst.
+- Wenn JA: Erkläre den Inhalt strukturiert.
 
-AUFGABE:
-1. Lies den Text im Bild (OCR)
-2. Erkenne um welche Behörde es geht
-3. Erkläre den Brief einfach und klar
+STRUKTUR FÜR DIE ANTWORT:
+📌 Worum geht es? (1-2 Sätze, klar und einfach)
+⚡ Was musst du tun? (Konkrete Handlungsschritte für den User)
+⏰ Bis wann? (Exaktes Datum/Frist fettgedruckt hervorheben, falls vorhanden)
+⚠️ Was passiert wenn nicht? (Konsequenzen verständlich erklären)
+📞 Kontakt (Name der Behörde, Telefon oder Aktenzeichen falls ersichtlich)
 
-STRUKTUR (genau so):
-📌 Worum geht es? (1 Satz)
-⚡ Was musst du tun? (Schritte)
-⏰ Bis wann?
-⚠️ Was passiert wenn nicht?
-📞 Kontakt (falls im Brief vorhanden)
-
-REGELN:
-- Nicht Wort für Wort übersetzen
-- Klar sagen was die Person tun muss
-- Fristen deutlich nennen
-- Maximal 8 Zeilen
-- Für Tigrinya/Amharisch: NUR Ethiopic Schrift, keine Klammer-Übersetzungen!
-
-USER FRAGE: ${userMessage || 'Erkläre diesen Brief'}`;
+ZUSATZ-NUTZERFRAGE: ${userMessage}`;
 
   try {
     const result = await model.generateContent([
       { text: prompt },
-      {
-        inlineData: {
-          mimeType: mimeType as any,
-          data: base64Image,
-        },
-      },
+      { inlineData: { mimeType: mimeType as any, data: base64Image } },
     ]);
-
     return result.response.text().trim();
   } catch (error) {
-    console.error('Gemini Vision Fehler:', error);
+    console.error('Gemini Vision Core Error:', error);
     return '';
   }
 }
 
-// ============================================
-// FALLBACK: TEXT ERKLÄREN MIT GROQ/DEEPSEEK
-// ============================================
-async function explainWithAI(
-  ocrText: string,
+async function analyzeExtractedText(
+  extractedText: string,
   userLang: 'de' | 'ti' | 'am' | 'en',
   userMessage: string
 ): Promise<string> {
-  const langMap = {
-    de: 'DEUTSCH',
-    ti: 'TIGRINYA (nur Ethiopic Schrift!)',
-    am: 'AMHARISCH (nur Ethiopic Schrift!)',
-    en: 'ENGLISH',
-  };
-
-  const behoerde = detectBehoerde(ocrText);
-
+  const behoerde = detectBehoerde(extractedText);
   const prompt = `${IDENTITY}
+Du bist ein Experte für deutsche Behördenbriefe.
 
-Behörde: ${behoerde}
-Antworte NUR auf: ${langMap[userLang]}
+Identifizierte Behörde: ${behoerde}
+⚠️ WICHTIG: Antworte AUSSCHLIESSLICH in dieser Sprache: ${PROMPT_LANG_MAP[userLang]}
 
-Brief erklärt einfach:
-📌 Worum geht es?
-⚡ Was tun?
-⏰ Bis wann?
-⚠️ Konsequenzen?
+Erkläre den folgenden Dokumenten-Text strukturiert und einfach:
+📌 Worum geht es? (Einfache Erklärung)
+⚡ Was musst du tun? (Konkrete Schritte)
+⏰ Bis wann? (Fristen fett markieren)
+⚠️ Was passiert wenn nicht?
+📞 Kontakt
 
-Brief: ${ocrText.substring(0, 2000)}
-Frage: ${userMessage}`;
+Zusatzfrage des Nutzers: ${userMessage}
 
-  // Groq zuerst
-  try {
-    const res = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 600,
-      temperature: 0.3,
-    });
-    const text = res.choices?.[0]?.message?.content?.trim();
-    if (text) return text;
-  } catch {
-    console.log('Groq Fehler → DeepSeek');
-  }
+Hier ist der zu analysierende Text:
+${extractedText.substring(0, 4000)}`;
 
-  // DeepSeek Fallback
   try {
     const res = await deepseek.chat.completions.create({
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 600,
+      max_tokens: 1000,
       temperature: 0.3,
     });
     return res.choices?.[0]?.message?.content?.trim() ?? '';
-  } catch (error) {
-    console.error('DeepSeek Fehler:', error);
-    return '';
+  } catch {
+    console.log('DeepSeek PDF-Analyse fehlgeschlagen → Fallback auf Groq Llama 3.3');
+    try {
+      const res = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1000,
+        temperature: 0.3,
+      });
+      return res.choices?.[0]?.message?.content?.trim() ?? '';
+    } catch (err) {
+      console.error('Groq Fallback-Pipeline ebenfalls fehlgeschlagen:', err);
+      return '';
+    }
   }
 }
 
 // ============================================
-// MAIN ROUTE
+// MAIN POST ROUTE CONTROLLER
 // ============================================
-export async function POST(req: Request) {
-  try {
-    const { image, message = '', userId } = await req.json();
-    const supabase = await createClient();
+const { image, message = '', conversationId, language } = await req.json();
+const { data: { user } } = await supabase.auth.getUser();
+const userId = user?.id ?? null;
 
     if (!image) {
       return NextResponse.json({
-        response: '📸 **Bitte lade ein Bild hoch**\n\nMach ein Foto von deinem Brief – die KI erklärt ihn dir auf Tigrinya, Amharisch, Deutsch oder Englisch.'
+        response: '📸📄 Bitte lade ein Bild oder eine PDF-Datei hoch.\n\nIch erkläre dir den Brief auf Tigrinya, Amharisch, Deutsch oder Englisch.'
       });
     }
 
-    // SIZE LIMIT
-    if (image.length > 5_500_000) {
-      return NextResponse.json({
-        response: '📸 **Bild zu groß**\n\nMaximal 5 MB. Bitte mach ein kleineres Foto.'
-      });
-    }
-
-    // PREMIUM CHECK
     let premium = null;
     if (userId) {
       premium = await checkPremium(userId);
       if (!premium.isPremium && premium.remaining <= 0) {
         return NextResponse.json({
-          response: '💎 **Kostenloses Limit erreicht**\n\n🚀 **Premium** (9,99€/Monat): Unbegrenzte Brief-Analysen.\n\n👉 Klick auf den "💎 Premium" Button!'
+          response: '💎 Kostenloses Limit erreicht.\n\nPremium (9,99€/Monat): Unbegrenzte Brief-Analysen.\n\n👉 Klick auf den "💎 Premium" Button!'
         });
       }
     }
 
-    // SPRACHE
-    const userLang = detectUserLanguage(message);
-    console.log('🌍 Sprache:', userLang);
+    const userLang = language || detectUserLanguage(message);
 
-    // Base64 extrahieren
     let base64Data = image;
     let mimeType = 'image/jpeg';
 
@@ -230,55 +218,96 @@ export async function POST(req: Request) {
       }
     }
 
-    // CACHE CHECK
+    const fileHash = crypto.createHash('md5').update(base64Data).digest('hex');
+
     const { data: cached } = await supabase
       .from('document_analyses')
       .select('analysis')
-      .eq('ocr_text', base64Data.substring(0, 100))
+      .eq('ocr_text', fileHash)
       .maybeSingle();
 
     if (cached?.analysis) {
-      console.log('✅ Cache Treffer!');
+      console.log('⚡ Cache-Hit! Schnelle Antwort wird ausgeliefert.');
+      await saveToChatHistory(supabase, userId, conversationId, message || 'Dokumenten-Analyse (Cache)', cached.analysis, userLang, 'cache');
       return NextResponse.json({ response: cached.analysis });
     }
 
-    // GEMINI VISION – OCR + Erklärung in einem Schritt!
-    console.log('🤖 Gemini Vision analysiert Bild...');
-    let explanation = await analyzeImageWithGemini(base64Data, mimeType, userLang, message);
+    let explanation = '';
+    let logSource = 'gemini_vision';
 
-    // Fallback wenn Gemini fehlschlägt
+    // ============================================
+    // DISTRIBUTION PIPELINE (PDF vs. BILD)
+    // ============================================
+    if (mimeType === 'application/pdf' || image.slice(0, 30).includes('pdf')) {
+      console.log('📄 PDF erkannt! Starte Parser via geschütztem Inline-Require...');
+      logSource = 'pdf_text_pipeline';
+
+      try {
+        // 🔥 Schützt vor ESM/Kompilierungs-Fehlern im Next.js Buildprozess
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const pdfParser = require('pdf-parse');
+        const pdfBuffer = Buffer.from(base64Data, 'base64');
+        const pdfData = await pdfParser(pdfBuffer);
+        const extractedText = pdfData.text?.trim();
+
+        if (!extractedText || extractedText.length < 10) {
+          return NextResponse.json({
+            response: '⚠️ Diese PDF enthält keinen auslesbaren Text (reiner Foto-Scan in einer PDF).\n\nBitte mache stattdessen ein scharfes Foto direkt mit deiner Handy-Kamera und lade es hoch!'
+          });
+        }
+
+        explanation = await analyzeExtractedText(extractedText, userLang, message);
+
+      } catch (pdfErr) {
+        console.error('Parser-Fehler bei PDF:', pdfErr);
+        return NextResponse.json({
+          response: '❌ Die PDF-Datei konnte nicht gelesen werden. Bitte schicke das Dokument stattdessen als Foto.'
+        });
+      }
+
+    } else {
+      console.log('🤖 Bild erkannt. Starte Vision-Analyse...');
+      explanation = await analyzeImageWithGemini(base64Data, mimeType, userLang, message);
+    }
+
     if (!explanation || explanation.length < 20) {
-      console.log('⚠️ Gemini Vision fehlgeschlagen → Fallback');
       return NextResponse.json({
-        response: '📸 **Kein Text erkannt**\n\nTipps:\n- Gute Beleuchtung\n- Brief gerade halten\n- Nah genug ran\n- Kamera ruhig halten'
+        response: '📸 Kein Text erkannt.\n\nTipps für ein gutes Ergebnis:\n- Gute Beleuchtung wählen\n- Brief flach und gerade hinlegen\n- Nah genug herangehen\n- Kamera ruhig halten!'
       });
     }
 
-    // CACHE SPEICHERN
     try {
       await supabase.from('document_analyses').insert({
         user_id: userId || null,
-        ocr_text: base64Data.substring(0, 100),
+        ocr_text: fileHash,
         analysis: explanation,
         language: userLang,
         created_at: new Date().toISOString(),
       });
     } catch (e) {
-      console.log('Cache Fehler (ignoriert):', e);
+      console.log('Cache-Insert Fehler (wird ignoriert):', e);
     }
 
-    // USAGE TRACKING
+    await saveToChatHistory(
+      supabase,
+      userId,
+      conversationId,
+      message || `📄 Brief: ${detectBehoerde(explanation)}`,
+      explanation,
+      userLang,
+      logSource
+    );
+
     if (userId && premium && !premium.isPremium) {
       await incrementUsage(userId, false);
     }
 
-    console.log('✅ Analyse fertig:', explanation.substring(0, 80));
     return NextResponse.json({ response: explanation });
 
   } catch (error) {
-    console.error('API Fehler:', error);
+    console.error('Globaler API Fehler in Document-Route:', error);
     return NextResponse.json({
-      response: '❌ **Fehler bei der Analyse**\n\nBitte später erneut versuchen.\n\nFalls Problem bleibt: massawa245@gmail.com'
+      response: '❌ Ein Fehler ist aufgetreten. Bitte versuche es gleich noch einmal oder wende dich an massawa245@gmail.com.'
     });
   }
 }
