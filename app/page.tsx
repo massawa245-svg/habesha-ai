@@ -58,7 +58,7 @@ export default function Home() {
   }, []);
 
   const loadUserProfile = useCallback(async (userId: string) => {
-    const { data } = await supabase.from('profiles').select('full_name, preferred_language').eq('id', userId).single();
+    const { data } = await supabase.from('profiles').select('full_name, preferred_language').eq('id', userId).maybeSingle();
     if (data) { 
       setUserName(data.full_name || ''); 
       setUserLanguage((data.preferred_language as Language) || 'de'); 
@@ -142,10 +142,8 @@ export default function Home() {
     initAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) { 
-        setUser(session.user); 
-        loadUserProfile(session.user.id); 
-        loadConversations(session.user.id); 
+      if (event === 'SIGNED_IN' && session) {
+        setUser(session.user);
       }
       if (event === 'SIGNED_OUT') { 
         setUser(null); 
@@ -225,11 +223,41 @@ export default function Home() {
   }, [isListening, userLanguage]);
 
   const handleFileUpload = useCallback(async (file: File) => {
-    setShowAttachMenu(false); 
+    setShowAttachMenu(false);
     setUploadingFile(true);
-    setMessages(prev => [...prev, { role: 'user', content: `📎 ${file.name}` }, { role: 'assistant', content: '📄 PDF-Analyse kommt bald! Bitte mach erstmal ein Foto von deinem Brief (📷 Kamera oder 🖼️ Galerie).' }]);
-    setUploadingFile(false);
-  }, []);
+
+    const currentPrompt = input.trim() || 'Erkläre diesen Brief';
+    setInput('');
+    if (inputRef.current) inputRef.current.style.height = 'auto';
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target?.result as string;
+      setMessages(prev => [...prev, { role: 'user', content: `📄 PDF gesendet: "${currentPrompt}"` }]);
+
+      try {
+        const res = await fetch('/api/analyze-document', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: base64,
+            message: currentPrompt,
+            userId: user?.id,
+            conversationId: currentConversationId,
+            language: userLanguage
+          }),
+        });
+        const data = await res.json();
+        setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
+        if (user) await loadConversations(user.id);
+      } catch {
+        addSystemMessage('PDF konnte nicht verarbeitet werden. Bitte versuche es erneut.');
+      } finally {
+        setUploadingFile(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  }, [user, input, currentConversationId, userLanguage, addSystemMessage, loadConversations]);
 
   const handleImageUpload = useCallback(async (file: File) => {
     setShowAttachMenu(false); 
@@ -288,7 +316,7 @@ export default function Home() {
       <>
         {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
         <div className={`fixed inset-y-0 left-0 z-30 transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0 lg:flex-shrink-0`}>
-          <Sidebar user={{ id: user.id, email: user.email, full_name: userName }} profile={{ preferred_language: userLanguage }} premium={{ isPremium, remaining: remainingUploads }} chatHistory={conversations} onClose={() => setSidebarOpen(false)} />
+          <Sidebar user={{ id: user.id, email: user.email, full_name: userName }} profile={{ preferred_language: userLanguage }} premium={{ isPremium, remaining: remainingUploads }} chatHistory={conversations} onClose={() => setSidebarOpen(false)} onNewChat={() => startNewChat(user.id)} />
         </div>
       </>
 

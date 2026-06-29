@@ -12,9 +12,10 @@ interface SidebarProps {
   premium: { isPremium: boolean; remaining: number };
   chatHistory: Array<{ id: string; title: string; created_at: string }>;
   onClose?: () => void;
+  onNewChat?: () => void;
 }
 
-export default function Sidebar({ user, profile, premium, chatHistory, onClose }: SidebarProps) {
+export default function Sidebar({ user, profile, premium, chatHistory, onClose, onNewChat }: SidebarProps) {
   const router = useRouter();
   const supabase = createClient();
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
@@ -43,7 +44,7 @@ export default function Sidebar({ user, profile, premium, chatHistory, onClose }
         <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-white p-1">✕</button>
       </div>
       <div className="p-4">
-        <button onClick={() => navigate('/')} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl transition-colors text-sm font-medium">
+        <button onClick={() => { onNewChat?.(); onClose?.(); }} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl transition-colors text-sm font-medium">
           + Neuer Chat
         </button>
       </div>

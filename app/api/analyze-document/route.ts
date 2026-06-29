@@ -133,6 +133,41 @@ ZUSATZ-NUTZERFRAGE: ${userMessage}`;
   }
 }
 
+async function analyzeExtractedTextWithGemini(
+  extractedText: string,
+  userLang: 'de' | 'ti' | 'am' | 'en',
+  userMessage: string
+): Promise<string> {
+  const model = gemini.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  const behoerde = detectBehoerde(extractedText);
+
+  const prompt = `${IDENTITY}
+Du bist ein Experte für deutsche Behördenbriefe und hilfst der Habesha Community in Deutschland.
+
+Identifizierte Behörde: ${behoerde}
+⚠️ WICHTIG: Antworte NUR in dieser Sprache: ${PROMPT_LANG_MAP[userLang]}
+
+Erkläre den folgenden Dokumenten-Text strukturiert und einfach:
+📌 Worum geht es? (Einfache Erklärung)
+⚡ Was musst du tun? (Konkrete Schritte)
+⏰ Bis wann? (Fristen fett markieren)
+⚠️ Was passiert wenn nicht?
+📞 Kontakt
+
+Zusatzfrage des Nutzers: ${userMessage}
+
+Hier ist der zu analysierende Text:
+${extractedText.substring(0, 4000)}`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    return result.response.text().trim();
+  } catch (error) {
+    console.error('Gemini PDF-Analyse Fehler:', error);
+    return '';
+  }
+}
+
 async function analyzeExtractedText(
   extractedText: string,
   userLang: 'de' | 'ti' | 'am' | 'en',
@@ -246,20 +281,22 @@ export async function POST(req: Request) {
       logSource = 'pdf_text_pipeline';
 
       try {
-        // 🔥 Schützt vor ESM/Kompilierungs-Fehlern im Next.js Buildprozess
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const pdfParser = require('pdf-parse');
+        const { extractText } = await import('unpdf');
         const pdfBuffer = Buffer.from(base64Data, 'base64');
-        const pdfData = await pdfParser(pdfBuffer);
-        const extractedText = pdfData.text?.trim();
+        const { text: extractedText } = await extractText(new Uint8Array(pdfBuffer), { mergePages: true });
 
-        if (!extractedText || extractedText.length < 10) {
+        if (!extractedText || extractedText.trim().length < 10) {
           return NextResponse.json({
             response: '⚠️ Diese PDF enthält keinen auslesbaren Text (reiner Foto-Scan in einer PDF).\n\nBitte mache stattdessen ein scharfes Foto direkt mit deiner Handy-Kamera und lade es hoch!'
           });
         }
 
-        explanation = await analyzeExtractedText(extractedText, userLang, message);
+        if (userLang === 'ti' || userLang === 'am') {
+          explanation = await analyzeExtractedTextWithGemini(extractedText.trim(), userLang, message);
+          logSource = 'pdf_gemini_pipeline';
+        } else {
+          explanation = await analyzeExtractedText(extractedText.trim(), userLang, message);
+        }
 
       } catch (pdfErr) {
         console.error('Parser-Fehler bei PDF:', pdfErr);
