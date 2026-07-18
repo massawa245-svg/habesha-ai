@@ -1,14 +1,11 @@
 // app/api/admin/approve/route.ts
 // Nimmt eine gepruefte/korrigierte Antwort, erstellt Embedding, speichert in training_data
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getSupabaseAdmin } from '@/lib/auth';
 
-// Service-Role Client (darf in training_data schreiben, umgeht RLS)
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Nicht beim Build vorrendern/auswerten - braucht Runtime-Env-Vars
+export const dynamic = 'force-dynamic';
 
 const gemini = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
 const embeddingModel = gemini.getGenerativeModel({ model: 'gemini-embedding-001' });
@@ -24,6 +21,7 @@ async function getEmbedding(text: string): Promise<number[]> {
 
 export async function POST(req: Request) {
   try {
+    const supabaseAdmin = getSupabaseAdmin();
     const {
       chatHistoryId,   // id aus chat_history (bigint)
       question,        // die User-Frage (input_text)
@@ -90,6 +88,7 @@ export async function POST(req: Request) {
 // Loeschen / Ablehnen: markiert chat_history als reviewed, NICHT approved
 export async function DELETE(req: Request) {
   try {
+    const supabaseAdmin = getSupabaseAdmin();
     const { chatHistoryId } = await req.json();
     if (!chatHistoryId) {
       return NextResponse.json({ error: 'ID erforderlich' }, { status: 400 });
